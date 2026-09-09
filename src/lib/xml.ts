@@ -178,18 +178,18 @@ export function findChildren(node: XmlNode | null | undefined, ns: string, name:
 // ---------------------------------------------------------------------------
 // Writer
 
+/** Escapes element text. Quotes are left alone so ETags render as "abc", which every client expects. */
 export function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
     // Strip control characters that are illegal in XML 1.0.
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
 }
 
 export function escapeAttr(s: string): string {
-  return escapeXml(s).replace(/'/g, "&apos;");
+  return escapeXml(s).replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 export const PREFIXES: Record<string, string> = {
