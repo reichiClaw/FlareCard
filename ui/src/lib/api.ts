@@ -153,7 +153,7 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ user: PublicUser }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
-  me: () => request<{ user: PublicUser }>("/auth/me"),
+  me: () => request<{ user: PublicUser | null }>("/auth/me"),
 
   settings: () => request<Settings>("/settings"),
   updateSettings: (patch: Partial<Pick<Settings, "addressbookName" | "addressbookDescription">>) =>

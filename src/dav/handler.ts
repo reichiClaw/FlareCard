@@ -91,7 +91,11 @@ export async function handleDav(request: Request, ctx: DavContext): Promise<Resp
   if (method === "OPTIONS") return optionsResponse();
   if (!resource) return new Response("Not Found", { status: 404, headers: baseHeaders() });
 
-  if (WRITE_METHODS.has(method)) return forbiddenWrite(resource.href);
+  if (WRITE_METHODS.has(method)) {
+    // Discard any body so the runtime does not complain about an unread request stream.
+    if (request.body) await request.body.cancel().catch(() => undefined);
+    return forbiddenWrite(resource.href);
+  }
 
   // Principals are private: users may only inspect their own (admins see all).
   if (resource.kind === "principal" && resource.username.toLowerCase() !== ctx.user.username.toLowerCase()) {

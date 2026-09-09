@@ -41,7 +41,7 @@ export async function makeApp(opts: { bootstrapPassword?: string | null } = {}):
       const headers = new Headers(rest.headers);
       if (auth === undefined) headers.set("Authorization", basic("alice", USER_PASSWORD));
       else if (auth) headers.set("Authorization", auth);
-      return app.request(`https://contacts.example.com${path}`, { ...rest, headers });
+      return Promise.resolve(app.request(`https://contacts.example.com${path}`, { ...rest, headers }));
     },
   };
 }

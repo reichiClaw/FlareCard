@@ -127,20 +127,27 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     return c.json({ ok: true });
   });
 
+  const resolveAdmin = async (request: Request): Promise<{ user: User; viaCookie: boolean } | null> => {
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const fromCookie = await auth.verifySessionToken(cookies[SESSION_COOKIE]);
+    if (fromCookie) return { user: fromCookie, viaCookie: true };
+    const basic = await auth.authenticateBasic(request.headers.get("authorization"));
+    if (basic.ok && basic.user.role === "admin") return { user: basic.user, viaCookie: false };
+    return null;
+  };
+
+  // Session probe used by the UI on load; answers 200 either way to keep the console quiet.
+  api.get("/auth/me", async (c) => {
+    const resolved = await resolveAdmin(c.req.raw);
+    return c.json({ user: resolved ? publicUser(resolved.user) : null });
+  });
+
   // Everything below requires an admin: session cookie (UI) or Basic auth (scripts).
   api.use("*", async (c, next) => {
     const request = c.req.raw;
-    const cookies = parseCookies(request.headers.get("cookie"));
-    let user = await auth.verifySessionToken(cookies[SESSION_COOKIE]);
-    let viaCookie = !!user;
-    if (!user) {
-      const basic = await auth.authenticateBasic(request.headers.get("authorization"));
-      if (basic.ok && basic.user.role === "admin") {
-        user = basic.user;
-        viaCookie = false;
-      }
-    }
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    const resolved = await resolveAdmin(request);
+    if (!resolved) return c.json({ error: "Unauthorized" }, 401);
+    const { user, viaCookie } = resolved;
     if (viaCookie && request.method !== "GET" && request.method !== "HEAD") {
       // CSRF: cookie-authenticated mutations must originate from our own origin.
       const site = request.headers.get("sec-fetch-site");
@@ -153,8 +160,6 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     c.set("user", user);
     await next();
   });
-
-  api.get("/auth/me", (c) => c.json({ user: publicUser(c.get("user")) }));
 
   // -------------------------------------------------------------------------
   // Settings

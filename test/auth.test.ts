@@ -115,7 +115,11 @@ describe("admin session auth", () => {
     expect(cookie).toContain("Secure");
     const me = await t.fetch("/api/auth/me", { auth: null, headers: { Cookie: cookie.split(";")[0] } });
     expect(me.status).toBe(200);
-    expect((await me.json()).user.username).toBe("admin");
+    expect(((await me.json()) as { user: { username: string } }).user.username).toBe("admin");
+    // The probe answers 200 with a null user when there is no session.
+    const anon = await t.fetch("/api/auth/me", { auth: null });
+    expect(anon.status).toBe(200);
+    expect(((await anon.json()) as { user: unknown }).user).toBeNull();
   });
 
   it("rejects requests without a session or Basic admin credentials", async () => {
@@ -139,6 +143,7 @@ describe("admin session auth", () => {
     const admin = await t.storage.getUserByUsername("admin");
     await t.storage.updateUser(admin!.id, { passwordHash: await hashPassword("new-pw") });
     const me = await t.fetch("/api/auth/me", { auth: null, headers: { Cookie: cookie } });
-    expect(me.status).toBe(401);
+    expect(((await me.json()) as { user: unknown }).user).toBeNull();
+    expect((await t.fetch("/api/contacts", { auth: null, headers: { Cookie: cookie } })).status).toBe(401);
   });
 });
