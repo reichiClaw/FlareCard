@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flarecard",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  // The admin UI is built by Vite into ui/dist and served through the ASSETS binding.
+  // The Worker always runs first so it can route CardDAV and API traffic before
+  // falling back to static files.
+  "assets": {
+    "directory": "./ui/dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+
+  // ONE SQLite-backed Durable Object holds all state (users, contacts, tombstones, settings).
+  "durable_objects": {
+    "bindings": [{ "name": "FLARECARD", "class_name": "FlareCardDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlareCardDO"] }],
+
+  "vars": {
+    // Public-facing hostname used in generated .mobileconfig profiles and setup pages.
+    // Leave empty to derive it from the incoming Host header.
+    "PUBLIC_HOST": "",
+    // Username of the first admin created from ADMIN_BOOTSTRAP_PASSWORD.
+    "ADMIN_BOOTSTRAP_USERNAME": "admin"
+  }
+
+  // Secrets (set with `wrangler secret put <NAME>` or in .dev.vars for local dev):
+  //   ADMIN_BOOTSTRAP_PASSWORD  - creates the initial admin if no users exist
+  //   SESSION_SECRET            - optional; HMAC key for admin session cookies (auto-generated if absent)
+}

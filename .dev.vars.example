@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+ADMIN_BOOTSTRAP_PASSWORD=change-me-please
+# Optional: HMAC key for admin session cookies. Generated and persisted in the DO if omitted.
+# SESSION_SECRET=
+# Optional: public hostname used in .mobileconfig profiles (defaults to the request Host header).
+# PUBLIC_HOST=contacts.example.com
