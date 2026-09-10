@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -143,6 +144,7 @@ export function SetupPage() {
       </Tabs>
 
       <AddressBookSettings name={s.addressbookName} description={s.addressbookDescription} />
+      <LockMarkerSettings enabled={s.lockMarker} mark={s.lockMark} />
     </div>
   );
 }
@@ -216,6 +218,53 @@ function AddressBookSettings({ name, description }: { name: string; description:
             </Button>
           </div>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LockMarkerSettings({ enabled, mark }: { enabled: boolean; mark: string }) {
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (lockMarker: boolean) => api.updateSettings({ lockMarker }),
+    onSuccess: (res, lockMarker) => {
+      toast.success(
+        lockMarker ? `Names on devices now end with ${mark}` : `Lock marker removed from device names`,
+        { description: `${res.touched} contact${res.touched === 1 ? "" : "s"} flagged for resync.` },
+      );
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed"),
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Lock marker on devices</CardTitle>
+        <CardDescription>
+          Phones and Macs cannot show that a contact is read-only, so FlareCard can append {mark} to every name in the
+          vCards it sends to devices. Names here in the admin UI stay unchanged.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+          <div className="space-y-1">
+            <Label htmlFor="lock-marker" className="text-sm font-medium">
+              Append {mark} to names during sync
+            </Label>
+            <p className="text-muted-foreground text-xs">
+              Example: <span className="font-medium">Ada Lovelace</span> appears as{" "}
+              <span className="font-medium">Ada Lovelace {mark}</span> in Contacts. Changing this makes every device
+              re-download the address book on its next sync.
+            </p>
+          </div>
+          <Switch
+            id="lock-marker"
+            checked={enabled}
+            disabled={save.isPending}
+            onCheckedChange={(v) => save.mutate(v)}
+            aria-label={`Append ${mark} to names during sync`}
+          />
+        </div>
       </CardContent>
     </Card>
   );

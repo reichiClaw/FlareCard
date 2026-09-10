@@ -60,6 +60,25 @@ export class ContactService {
     });
   }
 
+  /**
+   * Re-saves every contact unchanged so each gets a fresh seq. Used when a
+   * setting alters how cards are presented to devices (e.g. the lock marker):
+   * the ctag/sync-token move and clients re-download everything.
+   */
+  async touchAll(): Promise<number> {
+    const all = await this.storage.allContacts();
+    for (const c of all) {
+      await this.storage.upsertContact({
+        uid: c.uid,
+        vcard: c.vcard,
+        etag: c.etag,
+        displayName: c.displayName,
+        searchText: c.searchText,
+      });
+    }
+    return all.length;
+  }
+
   async importVcf(text: string, now: Date = new Date()): Promise<ImportSummary> {
     const cards = await importVCards(text, now);
     let imported = 0;

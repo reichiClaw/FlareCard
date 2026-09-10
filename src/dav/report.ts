@@ -2,7 +2,7 @@ import type { Contact } from "../storage/types";
 import { parseSyncToken, syncTokenFor } from "../lib/contacts";
 import { parseVCards, splitValue, type VProp } from "../lib/vcard";
 import { NS_CARDDAV, NS_DAV, dav, davError, findChild, findChildren, multistatus, type XmlNode } from "../lib/xml";
-import type { DavContext } from "./context";
+import { presentAll, type DavContext } from "./context";
 import { ADDRESSBOOK_PATH, type Resource, uidFromHref, vcardHref } from "./paths";
 import { ALLPROP, parsePropRequest, propResponse, statusResponse } from "./props";
 
@@ -29,7 +29,7 @@ async function multiget(ctx: DavContext, body: XmlNode): Promise<Response> {
   const request = parsePropRequest(body, ALLPROP.vcard);
   const hrefs = findChildren(body, NS_DAV, "href").map((h) => h.text.trim());
   const uids = hrefs.map(uidFromHref);
-  const contacts = await ctx.storage.getContacts(uids.filter((u): u is string => !!u));
+  const contacts = await presentAll(ctx, await ctx.storage.getContacts(uids.filter((u): u is string => !!u)));
   const byUid = new Map(contacts.map((c) => [c.uid, c]));
   const responses: string[] = [];
   for (let i = 0; i < hrefs.length; i++) {
@@ -144,7 +144,7 @@ async function query(ctx: DavContext, body: XmlNode): Promise<Response> {
   const request = parsePropRequest(body, ALLPROP.vcard);
   const filter = findChild(body, NS_CARDDAV, "filter");
   const limit = parseLimit(body, NS_CARDDAV);
-  const all = await ctx.storage.allContacts();
+  const all = await presentAll(ctx, await ctx.storage.allContacts());
   let matched = all.filter((c) => contactMatchesFilter(c, filter));
   let truncated = false;
   if (limit !== null && matched.length > limit) {
@@ -176,6 +176,7 @@ async function syncCollection(ctx: DavContext, body: XmlNode): Promise<Response>
   const limit = parseLimit(body, NS_DAV);
 
   let { changed, deleted } = await ctx.storage.changesSince(since);
+  changed = await presentAll(ctx, changed);
   if (since === 0) deleted = []; // initial sync never reports tombstones
 
   // Merge and order by seq so a truncated response can hand out an intermediate token.

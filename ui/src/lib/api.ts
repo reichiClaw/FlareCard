@@ -83,6 +83,9 @@ export interface ContactDetail {
 export interface Settings {
   addressbookName: string;
   addressbookDescription: string;
+  /** Append the lock marker to names in vCards served to devices. */
+  lockMarker: boolean;
+  lockMark: string;
   host: string;
   useSSL: boolean;
   addressbookPath: string;
@@ -156,8 +159,8 @@ export const api = {
   me: () => request<{ user: PublicUser | null }>("/auth/me"),
 
   settings: () => request<Settings>("/settings"),
-  updateSettings: (patch: Partial<Pick<Settings, "addressbookName" | "addressbookDescription">>) =>
-    request<{ ok: true }>("/settings", { method: "PUT", body: JSON.stringify(patch) }),
+  updateSettings: (patch: Partial<Pick<Settings, "addressbookName" | "addressbookDescription" | "lockMarker">>) =>
+    request<{ ok: true; touched: number }>("/settings", { method: "PUT", body: JSON.stringify(patch) }),
 
   contacts: (params: { q?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();

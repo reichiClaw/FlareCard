@@ -1,6 +1,6 @@
 import type { Contact } from "../storage/types";
 import { NS_DAV, dav, davError, escapeXml, multistatus, parseXml, XmlParseError, type XmlNode } from "../lib/xml";
-import type { DavContext } from "./context";
+import { present, presentAll, type DavContext } from "./context";
 import { ADDRESSBOOK_PATH, HOME_PATH, PRINCIPALS_PATH, principalHref, resolvePath, type Resource, vcardHref } from "./paths";
 import { ALLPROP, parsePropRequest, propResponse } from "./props";
 import { handleReport } from "./report";
@@ -106,8 +106,9 @@ export async function handleDav(request: Request, ctx: DavContext): Promise<Resp
 
   let contact: Contact | undefined;
   if (resource.kind === "vcard") {
-    contact = (await ctx.storage.getContact(resource.uid)) ?? undefined;
-    if (!contact) return new Response("Not Found", { status: 404, headers: baseHeaders() });
+    const stored = await ctx.storage.getContact(resource.uid);
+    if (!stored) return new Response("Not Found", { status: 404, headers: baseHeaders() });
+    contact = await present(ctx, stored);
   }
 
   switch (method) {
@@ -206,7 +207,7 @@ async function children(resource: Resource, ctx: DavContext): Promise<{ resource
     case "home":
       return [{ resource: { kind: "addressbook", href: ADDRESSBOOK_PATH } }];
     case "addressbook": {
-      const all = await ctx.storage.allContacts();
+      const all = await presentAll(ctx, await ctx.storage.allContacts());
       return all.map((c) => ({ resource: { kind: "vcard", href: vcardHref(c.uid), uid: c.uid }, contact: c }));
     }
     default:

@@ -9,7 +9,13 @@ import { DEMO_CONTACTS } from "./lib/demo";
 import { buildMobileConfig } from "./lib/mobileconfig";
 import { type ContactFields, type PhotoField, emptyFields, exportVCards } from "./lib/vcard";
 import { ADDRESSBOOK_PATH, principalHref } from "./dav/paths";
-import { DEFAULT_ADDRESSBOOK_DESCRIPTION, DEFAULT_ADDRESSBOOK_NAME } from "./dav/context";
+import {
+  DEFAULT_ADDRESSBOOK_DESCRIPTION,
+  DEFAULT_ADDRESSBOOK_NAME,
+  LOCK_MARKER_SETTING,
+  loadLockMarkerSetting,
+} from "./dav/context";
+import { LOCK_MARK } from "./lib/lockmark";
 
 type Variables = { user: User };
 
@@ -200,6 +206,8 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     return c.json({
       addressbookName: (await storage.getSetting("addressbook_name")) ?? DEFAULT_ADDRESSBOOK_NAME,
       addressbookDescription: (await storage.getSetting("addressbook_description")) ?? DEFAULT_ADDRESSBOOK_DESCRIPTION,
+      lockMarker: await loadLockMarkerSetting(storage),
+      lockMark: LOCK_MARK,
       host: host.host,
       useSSL: host.useSSL,
       addressbookPath: ADDRESSBOOK_PATH,
@@ -217,7 +225,16 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     if (typeof body.addressbookDescription === "string") {
       await storage.setSetting("addressbook_description", body.addressbookDescription.trim().slice(0, 500));
     }
-    return c.json({ ok: true });
+    let touched = 0;
+    if (typeof body.lockMarker === "boolean") {
+      const current = await loadLockMarkerSetting(storage);
+      if (current !== body.lockMarker) {
+        await storage.setSetting(LOCK_MARKER_SETTING, body.lockMarker ? "1" : "0");
+        // Every card devices hold is now stale; bump all seqs so they resync.
+        touched = await contacts.touchAll();
+      }
+    }
+    return c.json({ ok: true, touched });
   });
 
   // -------------------------------------------------------------------------
