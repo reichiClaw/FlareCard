@@ -5,6 +5,7 @@ import {
   ChevronRightIcon,
   DownloadIcon,
   ImageIcon,
+  LockIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
@@ -180,7 +181,17 @@ export function ContactsPage() {
                         {c.hasPhoto ? <ImageIcon className="size-4" /> : initials(c.fn)}
                       </div>
                       <div className="min-w-0">
-                        <div className="truncate font-medium">{c.fn}</div>
+                        <div className="flex items-center gap-1.5 font-medium">
+                          <span className="truncate">{c.fn}</span>
+                          <span
+                            className="text-muted-foreground inline-flex shrink-0"
+                            title="Locked: read-only on devices, edit here in the admin UI"
+                            role="img"
+                            aria-label="Locked, read-only on devices"
+                          >
+                            <LockIcon className="size-3.5" />
+                          </span>
+                        </div>
                         <div className="text-muted-foreground truncate text-xs md:hidden">{c.org || c.email || c.phone}</div>
                         {c.title && <div className="text-muted-foreground hidden truncate text-xs md:block">{c.title}</div>}
                       </div>
@@ -240,8 +251,10 @@ export function ContactsPage() {
       )}
 
       {!isEmptyDirectory && (
-        <p className="text-muted-foreground text-xs">
-          Devices pick up changes on their next sync. Contacts edited on a device are reverted server-side.{" "}
+        <p className="text-muted-foreground flex flex-wrap items-center gap-1 text-xs">
+          <LockIcon className="size-3" aria-hidden="true" />
+          All contacts are locked for devices: they sync read-only and edits made on a phone or Mac are reverted on the next
+          sync. Edit them here.{" "}
           <button type="button" className="hover:text-foreground underline underline-offset-2" onClick={() => seed.mutate()} disabled={seed.isPending}>
             Load demo contacts
           </button>
