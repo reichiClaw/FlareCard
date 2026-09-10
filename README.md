@@ -21,7 +21,7 @@ with an admin web UI for maintaining contacts and users.
 - [Architecture](#architecture)
 - [CardDAV surface](#carddav-surface)
 - [Develop on Cloudflare](#develop-on-cloudflare)
-- [Deploy to Cloudflare](#deploy-to-cloudflare)
+- [Deploy to Cloudflare](#deploy-to-cloudflare) (full manual: [`docs/deploy-cloudflare.md`](docs/deploy-cloudflare.md))
 - [Self-host on workerd](#self-host-on-workerd)
   - [Reverse proxy with TLS (Caddy / nginx)](#reverse-proxy-with-tls)
   - [Backups](#backups)
@@ -152,13 +152,18 @@ Environment / secrets:
 ## Deploy to Cloudflare
 
 ```bash
-wrangler secret put ADMIN_BOOTSTRAP_PASSWORD
+npx wrangler login
+npx wrangler secret put ADMIN_BOOTSTRAP_PASSWORD
 npm run deploy                        # builds the UI and runs wrangler deploy
 ```
 
 The `migrations` block in `wrangler.jsonc` declares `FlareCardDO` as a SQLite-backed class.
 Attach a custom domain (Workers → Settings → Domains) so devices talk to something like
 `contacts.example.com`.
+
+**Full step-by-step manual** — account setup, secrets, custom domain, first login, user
+onboarding, CI/CD, monitoring, backups, hardening, costs and troubleshooting:
+[`docs/deploy-cloudflare.md`](docs/deploy-cloudflare.md).
 
 ---
 
