@@ -6,6 +6,14 @@ login, user onboarding, monitoring, updates, hardening and troubleshooting.
 
 Time required: about 20 minutes for a first deployment.
 
+There are two ways to get FlareCard onto Cloudflare; pick one:
+
+- **Path A — CLI (sections 4–7).** Clone the repository, run `npm run deploy` from your machine.
+  Best if you are comfortable with a terminal and want full control.
+- **Path B — Cloudflare dashboard only (section 8).** Fork the repository on GitHub, connect it in
+  the dashboard and let Cloudflare build and deploy it on every push. No Node.js, no terminal,
+  and future updates are one click. Everything from section 9 onwards applies to both paths.
+
 ---
 
 ## Contents
@@ -17,21 +25,22 @@ Time required: about 20 minutes for a first deployment.
 5. [Review `wrangler.jsonc`](#5-review-wranglerjsonc)
 6. [Configure secrets and variables](#6-configure-secrets-and-variables)
 7. [First deployment](#7-first-deployment)
-8. [Attach a custom domain](#8-attach-a-custom-domain)
-9. [First login and bootstrap](#9-first-login-and-bootstrap)
-10. [Verify the CardDAV endpoint](#10-verify-the-carddav-endpoint)
-11. [Load contacts](#11-load-contacts)
-12. [Onboard users and devices](#12-onboard-users-and-devices)
-13. [Updating FlareCard](#13-updating-flarecard)
-14. [Continuous deployment with GitHub Actions](#14-continuous-deployment-with-github-actions)
-15. [Monitoring and logs](#15-monitoring-and-logs)
-16. [Backups and data export](#16-backups-and-data-export)
-17. [Security hardening](#17-security-hardening)
-18. [Costs and limits](#18-costs-and-limits)
-19. [Multiple environments (staging/production)](#19-multiple-environments-stagingproduction)
-20. [Troubleshooting](#20-troubleshooting)
-21. [Uninstalling](#21-uninstalling)
-22. [Command cheat sheet](#22-command-cheat-sheet)
+8. [Deploying from the Cloudflare dashboard (no CLI)](#8-deploying-from-the-cloudflare-dashboard-no-cli)
+9. [Attach a custom domain](#9-attach-a-custom-domain)
+10. [First login and bootstrap](#10-first-login-and-bootstrap)
+11. [Verify the CardDAV endpoint](#11-verify-the-carddav-endpoint)
+12. [Load contacts](#12-load-contacts)
+13. [Onboard users and devices](#13-onboard-users-and-devices)
+14. [Updating FlareCard](#14-updating-flarecard)
+15. [Continuous deployment with GitHub Actions](#15-continuous-deployment-with-github-actions)
+16. [Monitoring and logs](#16-monitoring-and-logs)
+17. [Backups and data export](#17-backups-and-data-export)
+18. [Security hardening](#18-security-hardening)
+19. [Costs and limits](#19-costs-and-limits)
+20. [Multiple environments (staging/production)](#20-multiple-environments-stagingproduction)
+21. [Troubleshooting](#21-troubleshooting)
+22. [Uninstalling](#22-uninstalling)
+23. [Command cheat sheet](#23-command-cheat-sheet)
 
 ---
 
@@ -75,7 +84,7 @@ On your workstation:
 
 On Cloudflare:
 
-- A Cloudflare account (free plan is enough; see section 18).
+- A Cloudflare account (free plan is enough; see section 19).
 - Optional but strongly recommended: a **domain whose DNS is hosted on Cloudflare** so you can
   serve FlareCard from something like `contacts.example.com`. Without it you get a
   `*.workers.dev` hostname, which also works.
@@ -89,10 +98,10 @@ On Cloudflare:
    time, Cloudflare asks you to pick a `workers.dev` subdomain (e.g. `acme.workers.dev`). Choose
    one; your Worker will be reachable at `flarecard.<subdomain>.workers.dev`.
 3. (Optional) Add your domain: **Add a site** → enter `example.com` → follow the nameserver
-   change instructions. You need this only for the custom domain in section 8.
+   change instructions. You need this only for the custom domain in section 9.
 
 You will authenticate Wrangler in the next section via a browser OAuth flow, so no API token is
-needed for a manual deployment. (API tokens are covered in section 14 for CI.)
+needed for a manual deployment. (API tokens are covered in section 15 for CI.)
 
 ---
 
@@ -149,7 +158,7 @@ The shipped configuration works as-is. The parts you may want to touch:
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlareCardDO"] }],
 
   "vars": {
-    "PUBLIC_HOST": "",                 // set to your custom hostname, see section 8
+    "PUBLIC_HOST": "",                 // set to your custom hostname, see section 9
     "ADMIN_BOOTSTRAP_USERNAME": "admin"
   }
 }
@@ -166,7 +175,7 @@ The shipped configuration works as-is. The parts you may want to touch:
 
 ## 6. Configure secrets and variables
 
-FlareCard needs one secret and accepts three optional settings.
+FlareCard needs one secret and accepts a handful of optional settings.
 
 | Name | Type | Required | Purpose |
 | --- | --- | --- | --- |
@@ -174,6 +183,16 @@ FlareCard needs one secret and accepts three optional settings.
 | `ADMIN_BOOTSTRAP_USERNAME` | var | no (default `admin`) | Username of that initial admin. |
 | `SESSION_SECRET` | secret | no | HMAC key for admin session cookies. If absent, FlareCard generates a random key once and stores it in the Durable Object. Set it explicitly if you want sessions to survive a full data reset or want to rotate it deliberately. |
 | `PUBLIC_HOST` | var | recommended | Public hostname (optionally `host:port`) written into `.mobileconfig` profiles and the Device setup page. Defaults to the incoming `Host` header, which is fine once you use a single hostname. |
+| `AUTH_RATE_LIMIT_IP` | var | no (default `60`) | Failed login attempts allowed per client IP within the window before FlareCard answers `429 Too Many Requests`. |
+| `AUTH_RATE_LIMIT_USER` | var | no (default `15`) | Failed attempts allowed per username within the window, regardless of IP. Protects an individual account against distributed guessing. |
+| `AUTH_RATE_LIMIT_WINDOW_SECONDS` | var | no (default `600`) | Length of the rate-limit window. Counters reset on a successful login and expire after the window. |
+
+The three `AUTH_RATE_LIMIT_*` variables control FlareCard's **built-in** brute-force protection. It
+covers Basic auth on `/dav/*` and `/api/*` as well as the admin login form, counts only *failed*
+attempts (a phone that syncs correctly every minute is never throttled), and is enforced inside the
+Durable Object, so it works identically on Cloudflare and on self-hosted workerd. Set a variable to
+`0` to disable that particular limit. Counters are kept in memory and start fresh after a deploy or
+when the Durable Object is evicted after a long idle period; that is acceptable for its purpose.
 
 ### Set the bootstrap password
 
@@ -209,7 +228,7 @@ You can also set vars in the dashboard (**Worker → Settings → Variables and 
 in `wrangler.jsonc` win on the next deploy, so keep them in the file.
 
 Store the bootstrap password in your password manager. After the first login you can (and should)
-delete the secret; see section 17.
+delete the secret; see section 18.
 
 ---
 
@@ -246,7 +265,121 @@ Common first-deploy hiccups:
 
 ---
 
-## 8. Attach a custom domain
+## 8. Deploying from the Cloudflare dashboard (no CLI)
+
+This path uses **Workers Builds**, Cloudflare's built-in CI: you connect a Git repository, Cloudflare
+clones it, runs the build, deploys the Worker and redeploys automatically whenever the connected
+branch changes. You never install Node.js or Wrangler locally. It is the equivalent of sections 4–7
+and of the GitHub Actions setup in section 15, done entirely by clicking.
+
+You need: a Cloudflare account (section 3, including the `workers.dev` subdomain) and a GitHub or
+GitLab account.
+
+### 8.1 Fork the repository
+
+1. Open the FlareCard repository on GitHub and click **Fork** (top right). Keep the name
+   `FlareCard` or choose your own; a **private** fork is fine and recommended.
+2. Your fork is what Cloudflare deploys. Later updates come in by syncing the fork with upstream
+   (GitHub shows a **Sync fork** button on the fork's main page).
+
+Why a fork rather than the upstream repository directly? Because the only file you may want to
+change — `wrangler.jsonc` (public hostname, rate limits) — lives in the repository, and because
+Cloudflare needs permission to install its GitHub app on the repository it deploys.
+
+### 8.2 Create the Worker from the repository
+
+1. Dashboard → **Compute (Workers)** → **Workers & Pages** → **Create** (blue button).
+2. On the **Workers** tab choose **Import a repository** (sometimes labelled *Connect to Git* /
+   *Continue with GitHub*).
+3. Authorize the **Cloudflare Workers and Pages** GitHub app when asked. Grant it access to your
+   fork only ("Only select repositories" → pick `FlareCard`).
+4. Select the fork from the list and click **Begin setup**.
+5. Fill in the **Set up your application** form:
+
+   | Field | Value |
+   | --- | --- |
+   | Project / Worker name | `flarecard` (must match `name` in `wrangler.jsonc`; if you pick another name the dashboard warns you and uses the name from the file) |
+   | Production branch | `main` |
+   | Root directory | `/` (leave empty) |
+   | Build command | `npm run build:ui` |
+   | Deploy command | `npx wrangler deploy` |
+   | Build variables | none needed |
+
+   Cloudflare detects `package.json`, runs `npm clean-install` automatically before the build
+   command and uses the Node.js version from `.nvmrc` (22). Do **not** use `npm run deploy` as
+   the build command; the build must not deploy, the *Deploy command* does that.
+
+6. Click **Save and Deploy**. The first build takes one to two minutes; you can watch the log
+   live under **Deployments → View build**. The log ends with `Deployed flarecard triggers` and
+   the `https://flarecard.<subdomain>.workers.dev` URL.
+
+If you do not see an *Import a repository* option, the Git integration may not be enabled for your
+account yet: open **Workers & Pages → Create → Workers**, scroll to *Deploy from a Git repository*,
+or make sure you are not inside a *Pages* creation flow (Pages and Workers look similar; FlareCard
+needs a **Worker**, because it uses Durable Objects).
+
+### 8.3 Add the secrets
+
+The first deployment succeeds but shows "No administrator yet" on the login page until the
+bootstrap password exists. Add it now:
+
+1. **Workers & Pages → flarecard → Settings → Variables and Secrets → Add**.
+2. Type: **Secret**. Variable name `ADMIN_BOOTSTRAP_PASSWORD`. Value: a long random password
+   (a password manager's generator is fine; store it there too). **Save** — no redeploy is
+   necessary for secrets, they are live within seconds.
+3. Optional: add `SESSION_SECRET` the same way (type Secret, 32+ random characters).
+
+Secrets added in the dashboard are **not** touched by Git deployments; `wrangler deploy` never
+overwrites secrets. They are also never displayed again, only replaceable.
+
+### 8.4 Set plain variables (hostname, rate limits)
+
+`PUBLIC_HOST`, `ADMIN_BOOTSTRAP_USERNAME` and the `AUTH_RATE_LIMIT_*` variables are defined in the
+`vars` block of `wrangler.jsonc`. On every Git deployment that file **replaces** whatever plain
+variables are set in the dashboard, so edit them in the repository, not in the dashboard:
+
+1. On GitHub, open your fork → `wrangler.jsonc` → pencil icon (**Edit this file**).
+2. Change, for example, `"PUBLIC_HOST": ""` to `"PUBLIC_HOST": "contacts.example.com"` and, if you
+   want stricter limits, `"AUTH_RATE_LIMIT_USER": "10"`.
+3. **Commit changes** to `main`. Cloudflare picks up the push and redeploys automatically; watch it
+   under **Deployments**.
+
+(If you would rather manage variables in the dashboard, add `"keep_vars": true` to `wrangler.jsonc`
+once and remove the `vars` block; then dashboard values survive deployments. Secrets are unaffected
+either way.)
+
+### 8.5 First login
+
+Open `https://flarecard.<subdomain>.workers.dev/admin/`, sign in with `admin` and the bootstrap
+password and continue with section 10 (create your personal admin account) and section 9 (custom
+domain — this is also done in the dashboard). After the first login, delete
+`ADMIN_BOOTSTRAP_PASSWORD` under **Settings → Variables and Secrets** as described in section 18.
+
+### 8.6 Day-to-day with the dashboard path
+
+- **Updating FlareCard**: on GitHub open your fork → **Sync fork → Update branch**. That single
+  commit on `main` triggers a build and deployment. Check **Deployments** for the green tick.
+- **Preview builds**: pushes to any other branch of the fork produce a *preview* version with its
+  own URL (`<hash>-flarecard.<subdomain>.workers.dev`) that shares the **same** Durable Object
+  data as production, because there is only one Worker. Treat previews as production for data
+  purposes, or use a separate Worker for staging (section 20).
+- **Rollback**: **Deployments** → previous version → **Rollback**. Data is never rolled back.
+- **Logs and metrics**: **flarecard → Logs** (persistent, searchable) and **Metrics**, see
+  section 16. The live tail is also available in the dashboard under **Logs → Live**.
+- **Build failures**: open the failed build; the log shows the failing step. The two common causes
+  are a `wrangler.jsonc` edit with a JSON syntax error (a missing comma) and a Node.js version
+  override. Fix the file on GitHub and push; there is nothing to clean up on Cloudflare.
+- **Disconnecting Git**: **Settings → Build → Disconnect**. The Worker and all data stay; you can
+  continue with the CLI path.
+
+Everything else in this manual — custom domain (9), verifying CardDAV (11), loading contacts (12),
+onboarding users (13), backups (17), hardening (18), troubleshooting (21) — is identical for both
+paths. Where a section mentions an `npx wrangler …` command, the dashboard equivalent is noted or
+the same action is available under **Workers & Pages → flarecard**.
+
+---
+
+## 9. Attach a custom domain
 
 Apple devices and DAVx5 work with the `workers.dev` hostname, but a stable company hostname is
 nicer for users and lets you change hosting later without touching every device.
@@ -285,7 +418,7 @@ does not exist for Workers, so any mode is fine.
 
 ---
 
-## 9. First login and bootstrap
+## 10. First login and bootstrap
 
 1. Open `https://contacts.example.com/admin/` (or the `workers.dev` URL).
 2. Sign in with `admin` (or your `ADMIN_BOOTSTRAP_USERNAME`) and the bootstrap password.
@@ -296,7 +429,7 @@ How bootstrap works, so you can reason about it later:
 - On every request the Durable Object checks once whether any users exist. If none exist **and**
   `ADMIN_BOOTSTRAP_PASSWORD` is set, it creates an admin with that password (PBKDF2-SHA256 hashed).
 - Once at least one user exists the secret is ignored forever, even if you change it. To recover a
-  lost admin password, see section 20.
+  lost admin password, see section 21.
 
 Recommended immediately after the first login:
 
@@ -309,7 +442,7 @@ Recommended immediately after the first login:
 
 ---
 
-## 10. Verify the CardDAV endpoint
+## 11. Verify the CardDAV endpoint
 
 From any machine with `curl`, using an admin or user account:
 
@@ -340,7 +473,7 @@ Expected: `DAV: 1, 3, addressbook`, a `301` to `/dav/`, and a `207` multistatus 
 
 ---
 
-## 11. Load contacts
+## 12. Load contacts
 
 Three ways, all in the admin UI under **Contacts**:
 
@@ -367,7 +500,7 @@ sync (iOS typically polls every 15–60 minutes or on opening Contacts; DAVx5 at
 
 ---
 
-## 12. Onboard users and devices
+## 13. Onboard users and devices
 
 For each person:
 
@@ -397,7 +530,7 @@ profile is a convenience, not a requirement.
 
 ---
 
-## 13. Updating FlareCard
+## 14. Updating FlareCard
 
 ```bash
 git pull
@@ -422,7 +555,7 @@ Rolling back code never rolls back data.
 
 ---
 
-## 14. Continuous deployment with GitHub Actions
+## 15. Continuous deployment with GitHub Actions
 
 Deploy from `main` automatically instead of from a laptop.
 
@@ -470,7 +603,7 @@ repository, so the workflow does not need them. If you prefer to manage them fro
 
 ---
 
-## 15. Monitoring and logs
+## 16. Monitoring and logs
 
 - **Live logs**: `npx wrangler tail` streams every request with method, path and status (the app
   logs one line per request plus any unhandled error). Filter: `npx wrangler tail --status error`.
@@ -489,7 +622,7 @@ Debug logs never include passwords or vCard contents.
 
 ---
 
-## 16. Backups and data export
+## 17. Backups and data export
 
 On Cloudflare the Durable Object's SQLite database is replicated and durable, and SQLite-backed
 Durable Objects support point-in-time recovery for the last 30 days
@@ -513,7 +646,7 @@ users. Devices will do a full resync because the sync token namespace restarts.
 
 ---
 
-## 17. Security hardening
+## 18. Security hardening
 
 FlareCard's defaults are sane (HTTPS-only on Cloudflare, PBKDF2 passwords, HttpOnly/SameSite
 cookies, CSRF checks, 403 on all writes). Additional measures, roughly in order of value:
@@ -532,13 +665,22 @@ cookies, CSRF checks, 403 on all writes). Additional measures, roughly in order 
    FlareCard login. Do **not** put Access in front of `/dav/*` or `/.well-known/*`; CardDAV clients
    cannot complete an Access login.
 
-   Note: `/api/*` is also used with Basic auth by scripts (section 11/16). Either exempt those with
+   Note: `/api/*` is also used with Basic auth by scripts (section 12/17). Either exempt those with
    an Access *service token* or run scripts from a machine that can complete the Access flow.
 
-3. **Rate-limit authentication.** Dashboard → **Security → WAF → Rate limiting rules**: e.g.
-   "if URI path starts with `/api/auth/login` and rate > 10 requests / 1 minute per IP → block for
-   10 minutes", and a looser one for `/dav/*` 401 responses (e.g. 60 per minute per IP) to blunt
-   password guessing against app passwords. Rate limiting rules are available on the free plan.
+3. **Rate limiting.** FlareCard ships with brute-force protection enabled: after 15 failed attempts
+   against one username or 60 from one IP within 10 minutes, further attempts get
+   `429 Too Many Requests` with a `Retry-After` header, on the CardDAV endpoints and the admin
+   login alike. Tune it with the `AUTH_RATE_LIMIT_*` variables (section 6); the defaults are
+   generous enough that a mistyped password on a phone never locks anyone out, yet make online
+   guessing of a 16-character app password hopeless.
+
+   For an additional edge-side layer that stops abusive traffic before it reaches the Worker
+   (and before it counts against your request quota), add a Cloudflare **WAF rate limiting rule**:
+   Dashboard → **Security → WAF → Rate limiting rules → Create**: "if URI path starts with
+   `/api/auth/login` and rate > 10 requests / 1 minute per IP → block for 10 minutes", and a looser
+   one for `/dav/*` responses with status 401 (e.g. 60 per minute per IP). Rate limiting rules are
+   available on the free plan and are independent of FlareCard's built-in limiter.
 
 4. **Disable the `workers.dev` hostname** once the custom domain works (`"workers_dev": false`)
    so there is a single well-known entry point.
@@ -554,7 +696,7 @@ cookies, CSRF checks, 403 on all writes). Additional measures, roughly in order 
 
 ---
 
-## 18. Costs and limits
+## 19. Costs and limits
 
 FlareCard is tiny by Cloudflare standards. Rough sizing for the design target (200 users, a few
 thousand contacts):
@@ -583,7 +725,7 @@ Hard limits that matter:
 
 ---
 
-## 19. Multiple environments (staging/production)
+## 20. Multiple environments (staging/production)
 
 Wrangler environments let one config produce several Workers. Add to `wrangler.jsonc`:
 
@@ -609,7 +751,7 @@ secrets and hostname. Top-level `durable_objects`/`migrations`/`assets` are inhe
 
 ---
 
-## 20. Troubleshooting
+## 21. Troubleshooting
 
 **Login page says "No administrator yet".**
 The user table is empty and `ADMIN_BOOTSTRAP_PASSWORD` is not set (or was set after the Worker
@@ -623,7 +765,7 @@ Options, least destructive first: (1) if another admin exists, ask them to reset
 only runs on an empty user table; (3) as a last resort, wipe the Durable Object by deploying a
 new migration that renames/deletes the class, which discards **all** data — export contacts first
 if you still can via a user account (users can `GET` vCards but not the export endpoint). Practical
-prevention: create two admin accounts (section 9).
+prevention: create two admin accounts (section 10).
 
 **iPhone says "Cannot verify account" / "Server does not support CardDAV".**
 - Check `curl -si -X OPTIONS https://host/dav/` shows `DAV: 1, 3, addressbook`.
@@ -660,6 +802,15 @@ original `migrations` block; never edit past migrations.
 **`wrangler deploy` fails with "Assets directory ./ui/dist not found".**
 Run `npm run build:ui` (or use `npm run deploy`, which does it for you).
 
+**429 "Too many failed authentication attempts" (from FlareCard).**
+The built-in rate limiter tripped: more than `AUTH_RATE_LIMIT_USER` (default 15) wrong passwords for
+that username, or more than `AUTH_RATE_LIMIT_IP` (default 60) from that IP, within the window. The
+usual cause is a device still holding an old app password after a reset — fix the password on the
+device; the block clears on the first correct login or after `Retry-After` seconds (default up to
+10 minutes). If a whole office shares one public IP and hits the IP budget, raise
+`AUTH_RATE_LIMIT_IP` in `wrangler.jsonc` and redeploy. To lift a block immediately, redeploy the
+Worker (counters live in memory).
+
 **429 / "daily request limit exceeded" on the free plan.**
 Upgrade to Workers Paid or lengthen sync intervals in DAVx5. iOS intervals cannot be set below
 "Fetch → Hourly"/"Manually" under Settings → Contacts → Accounts → Fetch New Data.
@@ -675,19 +826,19 @@ third-party browser; Safari and Files hand it to Settings correctly.
 
 ---
 
-## 21. Uninstalling
+## 22. Uninstalling
 
 ```bash
 npx wrangler delete            # removes the Worker, its assets, secrets and routes
 ```
 
 Deleting the Worker also deletes its Durable Object namespace and **all stored data** after a
-grace period. Export contacts first (section 16). Remove the custom domain DNS record if Cloudflare
+grace period. Export contacts first (section 17). Remove the custom domain DNS record if Cloudflare
 did not clean it up, and remove any Access applications or WAF rules you created.
 
 ---
 
-## 22. Command cheat sheet
+## 23. Command cheat sheet
 
 ```bash
 npm install                                   # dependencies (includes wrangler)

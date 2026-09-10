@@ -148,6 +148,14 @@ Environment / secrets:
 | `ADMIN_BOOTSTRAP_USERNAME` | Var. Username for that admin (default `admin`). |
 | `SESSION_SECRET` | Secret, optional. HMAC key for admin session cookies. If unset, a random key is generated once and stored in `settings`. |
 | `PUBLIC_HOST` | Var, optional. Hostname (and port) placed into `.mobileconfig` profiles and the setup page. Defaults to the request `Host` header. |
+| `AUTH_RATE_LIMIT_IP` | Var, optional (default `60`). Failed auth attempts allowed per client IP per window before `429`. `0` disables. |
+| `AUTH_RATE_LIMIT_USER` | Var, optional (default `15`). Failed auth attempts allowed per username per window before `429`. `0` disables. |
+| `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Var, optional (default `600`). Rate-limit window; a successful login resets the counters. |
+
+Rate limiting is built in and runtime-neutral: it lives in memory inside the single Durable
+Object, counts only failed Basic-auth and admin-login attempts (so correctly configured devices are
+never throttled), and answers `429 Too Many Requests` with `Retry-After`. Behind a reverse proxy
+the client IP is taken from `CF-Connecting-IP`, then `X-Forwarded-For`, then `X-Real-IP`.
 
 ## Deploy to Cloudflare
 
@@ -160,6 +168,11 @@ npm run deploy                        # builds the UI and runs wrangler deploy
 The `migrations` block in `wrangler.jsonc` declares `FlareCardDO` as a SQLite-backed class.
 Attach a custom domain (Workers → Settings → Domains) so devices talk to something like
 `contacts.example.com`.
+
+**No terminal?** Fork this repository and deploy it entirely from the Cloudflare dashboard
+(Workers & Pages → Create → Import a repository, build command `npm run build:ui`, deploy command
+`npx wrangler deploy`, then add the `ADMIN_BOOTSTRAP_PASSWORD` secret). Every push to `main`
+redeploys automatically. Step-by-step: [section 8 of the manual](docs/deploy-cloudflare.md#8-deploying-from-the-cloudflare-dashboard-no-cli).
 
 **Full step-by-step manual** — account setup, secrets, custom domain, first login, user
 onboarding, CI/CD, monitoring, backups, hardening, costs and troubleshooting:
@@ -309,7 +322,8 @@ have CardDAV credentials.
   emails, postal addresses, websites, birthday, notes, photo). Photos are downscaled to 512px
   JPEG in the browser and capped at 512 KB server-side. Bulk **import** from `.vcf` (2.1/3.0/4.0)
   or CSV (Google/Outlook/generic headers), **export** everything as one `.vcf`, and a
-  **Load demo contacts** button.
+  **Load demo contacts** button. A lock icon after every name is a reminder that contacts are
+  locked for devices: they sync read-only and can only be changed here.
 - **Users** — create (an app password is generated and shown **once**), enable/disable, change
   role, reset app password, delete, and **Download iOS/macOS profile** (`.mobileconfig` with a
   `com.apple.carddav.account` payload prefilled with host, username and principal URL).
@@ -379,4 +393,6 @@ Cloudflare tooling and finish in ~2 seconds.
   properties from other systems are not preserved.
 - Group support (`X-ADDRESSBOOKSERVER-KIND:group`) is not implemented.
 - Partial `address-data` retrieval (`C:prop` inside `address-data`) returns the full card.
-- Authentication has no rate limiting; put it behind your proxy's limits if exposed publicly.
+- Auth rate-limit counters are kept in memory inside the Durable Object: they reset on deploy or
+  when the object is evicted after idling. That is adequate for brute-force protection but is not
+  a persistent lockout; add an edge/WAF rule if you need one.
