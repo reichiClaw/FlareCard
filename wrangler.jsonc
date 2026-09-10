@@ -33,10 +33,17 @@
     // within the window before 429s are returned. Successful logins reset the counters.
     "AUTH_RATE_LIMIT_IP": "60",
     "AUTH_RATE_LIMIT_USER": "15",
-    "AUTH_RATE_LIMIT_WINDOW_SECONDS": "600"
+    "AUTH_RATE_LIMIT_WINDOW_SECONDS": "600",
+    // ACME directory used for automatic profile-signing certificates. Empty = Let's Encrypt
+    // production. Use https://acme-staging-v02.api.letsencrypt.org/directory while testing.
+    "ACME_DIRECTORY_URL": ""
   }
 
   // Secrets (set with `wrangler secret put <NAME>` or in .dev.vars for local dev):
   //   ADMIN_BOOTSTRAP_PASSWORD  - creates the initial admin if no users exist
   //   SESSION_SECRET            - optional; HMAC key for admin session cookies (auto-generated if absent)
+  //   PROFILE_SIGNING_KEY       - optional; PEM private key to sign .mobileconfig profiles with
+  //   PROFILE_SIGNING_CERT      - optional; PEM certificate chain for that key (leaf first)
+  //                               (when both are set they take precedence over the automatic
+  //                               Let's Encrypt certificate managed from the admin UI)
 }

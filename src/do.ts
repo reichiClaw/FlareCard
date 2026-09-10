@@ -16,7 +16,7 @@ export class FlareCardDO extends DurableObject<Env> {
     super(ctx, env);
     const storage = new SqliteStorage(ctx.storage.sql);
     storage.migrate();
-    this.app = createApp({ storage, env });
+    this.app = createApp({ storage, env, waitUntil: (p) => ctx.waitUntil(p) });
   }
 
   async fetch(request: Request): Promise<Response> {

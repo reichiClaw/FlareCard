@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { createApp, type AppEnv } from "../src/app";
+import type { FetchLike } from "../src/lib/acme";
 import { MemoryStorage } from "../src/storage/memory";
 import { hashPassword } from "../src/lib/crypto";
 import { findChild, findChildren, parseXml, type XmlNode, NS_DAV } from "../src/lib/xml";
@@ -18,12 +19,14 @@ export function basic(username: string, password: string): string {
 }
 
 export async function makeApp(
-  opts: { bootstrapPassword?: string | null; env?: Partial<AppEnv> } = {},
+  opts: { bootstrapPassword?: string | null; env?: Partial<AppEnv>; fetch?: FetchLike } = {},
 ): Promise<TestApp> {
   const storage = new MemoryStorage();
   const bootstrapPassword = opts.bootstrapPassword === undefined ? ADMIN_PASSWORD : opts.bootstrapPassword;
   const app = createApp({
     storage,
+    fetch: opts.fetch,
+    acmePollIntervalMs: 10,
     env: {
       ADMIN_BOOTSTRAP_PASSWORD: bootstrapPassword ?? undefined,
       ADMIN_BOOTSTRAP_USERNAME: "admin",

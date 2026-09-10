@@ -7,14 +7,22 @@ import { DAV_HEADER, handleDav, optionsResponse, unauthorized } from "./dav/hand
 import { loadDavSettings } from "./dav/context";
 import { adminApi } from "./api";
 import { AuthRateLimiter, type AuthRateLimitEnv, clientIp, tooManyRequests } from "./lib/ratelimit";
+import { ProfileSigner, type SigningEnv } from "./lib/signing";
+import type { FetchLike } from "./lib/acme";
 
-export interface AppEnv extends AuthEnv, AuthRateLimitEnv {
+export interface AppEnv extends AuthEnv, AuthRateLimitEnv, SigningEnv {
   PUBLIC_HOST?: string;
 }
 
 export interface AppDeps {
   storage: Storage;
   env: AppEnv;
+  /** Outbound fetch for the ACME client (injectable for tests). */
+  fetch?: FetchLike;
+  /** Keeps background work (certificate renewal) alive after the response is sent. */
+  waitUntil?: (p: Promise<unknown>) => void;
+  /** ACME poll interval override (tests). */
+  acmePollIntervalMs?: number;
 }
 
 export interface Services {
@@ -22,7 +30,10 @@ export interface Services {
   auth: AuthService;
   contacts: ContactService;
   rateLimiter: AuthRateLimiter;
+  signer: ProfileSigner;
   env: AppEnv;
+  /** Schedules background work; falls back to fire-and-forget. */
+  background: (p: Promise<unknown>) => void;
 }
 
 /**
@@ -37,6 +48,11 @@ export function createApp(deps: AppDeps): Hono {
     auth: new AuthService(deps.storage, deps.env),
     contacts: new ContactService(deps.storage),
     rateLimiter: new AuthRateLimiter(deps.env),
+    signer: new ProfileSigner(deps.storage, deps.env, deps.fetch, undefined, deps.acmePollIntervalMs),
+    background: (p) => {
+      const guarded = p.catch((e) => console.error("Background task failed", e));
+      if (deps.waitUntil) deps.waitUntil(guarded);
+    },
   };
   const app = new Hono();
   let bootstrapped = false;
@@ -52,6 +68,13 @@ export function createApp(deps: AppDeps): Hono {
   app.all("/.well-known/carddav", (c) => {
     const target = new URL(DAV_ROOT, c.req.url);
     return new Response(null, { status: 301, headers: { Location: target.pathname } });
+  });
+
+  // ACME http-01 validation for the automatically managed profile-signing certificate.
+  app.get("/.well-known/acme-challenge/:token", async (c) => {
+    const answer = await services.signer.challengeResponse(c.req.param("token"));
+    if (!answer) return c.text("Not Found", 404);
+    return c.text(answer, 200, { "Content-Type": "text/plain", "Cache-Control": "no-store" });
   });
 
   const dav = async (c: { req: { raw: Request } }) => {

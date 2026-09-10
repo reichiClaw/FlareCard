@@ -4,3 +4,9 @@ ADMIN_BOOTSTRAP_PASSWORD=change-me-please
 # SESSION_SECRET=
 # Optional: public hostname used in .mobileconfig profiles (defaults to the request Host header).
 # PUBLIC_HOST=contacts.example.com
+# Optional: sign .mobileconfig profiles with your own certificate (PEM; \n for newlines or
+# a quoted multi-line value). Leave unset to use the automatic Let's Encrypt certificate.
+# PROFILE_SIGNING_KEY=
+# PROFILE_SIGNING_CERT=
+# Optional: ACME directory for automatic signing certificates (default: Let's Encrypt production).
+# ACME_DIRECTORY_URL=https://acme-staging-v02.api.letsencrypt.org/directory

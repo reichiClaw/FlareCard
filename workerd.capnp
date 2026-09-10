@@ -16,6 +16,13 @@ const config :Workerd.Config = (
     (name = "assets", disk = (path = "ui/dist")),
     # SQLite files for the Durable Object live here (writable).
     (name = "do-storage", disk = (path = "data", writable = true)),
+    # Outbound internet access, needed only for automatic profile-signing certificates
+    # (ACME requests to Let's Encrypt). Remove if you never enable that feature.
+    (name = "internet", network = (allow = ["public"])),
+    # Optional: reuse the certificate your reverse proxy already maintains for signing
+    # profiles. Point this at the directory holding privkey.pem + fullchain.pem (certbot)
+    # or <host>.key + <host>.crt (Caddy) and uncomment the SIGNING_CERTS binding below.
+    # (name = "signing-certs", disk = (path = "/etc/letsencrypt/live/contacts.example.com")),
   ],
 
   sockets = [
@@ -46,5 +53,13 @@ const flarecard :Workerd.Worker = (
     (name = "AUTH_RATE_LIMIT_IP", fromEnvironment = "AUTH_RATE_LIMIT_IP"),
     (name = "AUTH_RATE_LIMIT_USER", fromEnvironment = "AUTH_RATE_LIMIT_USER"),
     (name = "AUTH_RATE_LIMIT_WINDOW_SECONDS", fromEnvironment = "AUTH_RATE_LIMIT_WINDOW_SECONDS"),
+    # Profile signing. Either let FlareCard obtain a Let's Encrypt certificate itself
+    # (admin UI switch; ACME_DIRECTORY_URL may point at the staging directory for tests),
+    # provide PEM material through the environment, or mount the proxy's certificate
+    # directory via the SIGNING_CERTS disk service above.
+    (name = "ACME_DIRECTORY_URL", fromEnvironment = "ACME_DIRECTORY_URL"),
+    (name = "PROFILE_SIGNING_KEY", fromEnvironment = "PROFILE_SIGNING_KEY"),
+    (name = "PROFILE_SIGNING_CERT", fromEnvironment = "PROFILE_SIGNING_CERT"),
+    # (name = "SIGNING_CERTS", service = "signing-certs"),
   ],
 );

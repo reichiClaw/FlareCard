@@ -8,4 +8,10 @@ export interface Env extends AppEnv {
    * on workerd it is a `disk` service. Both are plain Fetchers.
    */
   ASSETS: Fetcher;
+  /**
+   * Optional (workerd): a `disk` service pointing at a directory that holds an
+   * operator-managed signing certificate (privkey.pem + fullchain.pem, or Caddy's
+   * <host>.key + <host>.crt). See README "Profile signing".
+   */
+  SIGNING_CERTS?: Fetcher;
 }

@@ -16,6 +16,7 @@ import {
   loadLockMarkerSetting,
 } from "./dav/context";
 import { LOCK_MARK } from "./lib/lockmark";
+import { SigningError } from "./lib/signing";
 
 type Variables = { user: User };
 
@@ -114,7 +115,12 @@ function formatRetry(seconds: number): string {
 
 export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   const api = new Hono<{ Variables: Variables }>();
-  const { storage, auth, contacts, rateLimiter } = services;
+  const { storage, auth, contacts, rateLimiter, signer } = services;
+
+  /** Kicks the ACME state machine in the background when there is something to do. */
+  const nudgeSigner = async () => {
+    if (await signer.hasWork()) services.background(signer.advance());
+  };
 
   api.get("/status", async (c) => {
     const { host } = publicHost(services, c.req.raw);
@@ -386,12 +392,72 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
       username: target.username,
       accountDescription: name,
     });
-    return new Response(profile, {
+    const plist = new TextEncoder().encode(profile);
+    let body: Uint8Array = plist;
+    let signed = false;
+    try {
+      const cms = await signer.sign(plist);
+      if (cms) {
+        body = cms;
+        signed = true;
+      }
+    } catch (e) {
+      console.error("Profile signing failed; serving unsigned profile", e);
+    }
+    await nudgeSigner();
+    return new Response(body as BodyInit, {
       headers: {
-        "Content-Type": "application/x-apple-aspen-config; charset=utf-8",
+        "Content-Type": signed ? "application/x-apple-aspen-config" : "application/x-apple-aspen-config; charset=utf-8",
         "Content-Disposition": `attachment; filename="flarecard-${target.username}.mobileconfig"`,
+        "X-FlareCard-Profile-Signed": signed ? "yes" : "no",
       },
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Profile signing (CMS with an operator-provided or automatically managed certificate)
+
+  api.get("/signing", async (c) => {
+    const host = publicHost(services, c.req.raw);
+    const status = await signer.status(host.hostname);
+    if (status.inProgress || status.renewalDue) await nudgeSigner();
+    return c.json(status);
+  });
+
+  api.put("/signing", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown; email?: unknown };
+    if (typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
+    const host = publicHost(services, c.req.raw);
+    const email = typeof body.email === "string" ? body.email.trim() : null;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return c.json({ error: "Invalid e-mail address" }, 400);
+    try {
+      if (body.enabled) {
+        await signer.enable(host.hostname, email);
+        // Give the first order a head start so the UI sees progress immediately,
+        // then let it continue in the background.
+        await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
+        services.background(signer.advance());
+      } else {
+        await signer.disable();
+      }
+    } catch (e) {
+      if (e instanceof SigningError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+    return c.json(await signer.status(host.hostname));
+  });
+
+  api.post("/signing/renew", async (c) => {
+    const host = publicHost(services, c.req.raw);
+    try {
+      await signer.renewNow(host.hostname);
+    } catch (e) {
+      if (e instanceof SigningError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+    await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
+    services.background(signer.advance());
+    return c.json(await signer.status(host.hostname));
   });
 
   return api;
