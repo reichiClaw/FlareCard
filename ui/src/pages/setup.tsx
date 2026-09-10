@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { AppleIcon, Loader2Icon, SmartphoneIcon } from "lucide-react";
+import { AppleIcon, BadgeCheckIcon, Loader2Icon, RefreshCwIcon, ShieldAlertIcon, ShieldOffIcon, SmartphoneIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import type { SigningStatus } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -145,6 +147,7 @@ export function SetupPage() {
 
       <AddressBookSettings name={s.addressbookName} description={s.addressbookDescription} />
       <LockMarkerSettings enabled={s.lockMarker} mark={s.lockMark} />
+      <ProfileSigningSettings />
     </div>
   );
 }
@@ -265,6 +268,157 @@ function LockMarkerSettings({ enabled, mark }: { enabled: boolean; mark: string 
             aria-label={`Append ${mark} to names during sync`}
           />
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function signingBadge(s: SigningStatus) {
+  if (s.source === "external" || (s.source === "managed" && s.enabled && s.phase !== "error")) {
+    return (
+      <Badge variant="success">
+        <BadgeCheckIcon /> Signed
+      </Badge>
+    );
+  }
+  if (s.enabled && s.inProgress) {
+    return (
+      <Badge variant="secondary">
+        <Loader2Icon className="animate-spin" /> Requesting certificate
+      </Badge>
+    );
+  }
+  if (s.enabled && s.phase === "error") {
+    return (
+      <Badge variant="destructive">
+        <ShieldAlertIcon /> Failed
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline">
+      <ShieldOffIcon /> Not signed
+    </Badge>
+  );
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function ProfileSigningSettings() {
+  const qc = useQueryClient();
+  const signing = useQuery({
+    queryKey: ["signing"],
+    queryFn: api.signing,
+    refetchInterval: (q) => (q.state.data?.inProgress ? 2000 : false),
+  });
+  const [email, setEmail] = useState<string | null>(null);
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["signing"] });
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => api.updateSigning({ enabled, email: (email ?? signing.data?.email ?? "") || undefined }),
+    onSuccess: (res) => {
+      if (res.enabled) toast.success(res.phase === "issued" ? "Profiles are now signed" : "Requesting a certificate from Let's Encrypt…");
+      else toast.success("Profiles are downloaded unsigned again");
+      qc.setQueryData(["signing"], res);
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not update signing"),
+  });
+  const renew = useMutation({
+    mutationFn: api.renewSigning,
+    onSuccess: (res) => {
+      toast.success("Renewal started");
+      qc.setQueryData(["signing"], res);
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not renew"),
+  });
+
+  if (signing.isPending) return <Skeleton className="h-48 w-full" />;
+  if (signing.isError) return <ErrorState error={signing.error} onRetry={() => signing.refetch()} />;
+  const s = signing.data;
+  const emailValue = email ?? s.email ?? "";
+  const busy = toggle.isPending || renew.isPending;
+  const hostMismatch = s.enabled && s.domain && s.currentHost && s.domain !== s.currentHost;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle>Profile signing</CardTitle>
+          {signingBadge(s)}
+        </div>
+        <CardDescription>
+          Signed <code>.mobileconfig</code> files show “Verified” instead of “Not Signed” on iPhones and Macs. FlareCard can
+          obtain and renew a free Let's Encrypt certificate for <span className="font-medium">{s.currentHost}</span> by itself;
+          nothing to install or rotate.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="rounded-lg border p-4 text-sm">
+          <p>{s.message}</p>
+          {s.certificate && (
+            <dl className="text-muted-foreground mt-3 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-[auto_1fr]">
+              <dt className="font-medium">Certificate for</dt>
+              <dd>{s.certificate.dnsNames.join(", ") || s.certificate.subject}</dd>
+              <dt className="font-medium">Valid</dt>
+              <dd>
+                {formatDate(s.certificate.notBefore)} – {formatDate(s.certificate.notAfter)} ({s.certificate.daysLeft} days left
+                {s.source === "managed" ? ", renews automatically" : ""})
+              </dd>
+              <dt className="font-medium">Key</dt>
+              <dd>{s.certificate.algorithm}</dd>
+            </dl>
+          )}
+          {s.error && <p className="text-destructive mt-3 text-xs break-words">{s.error}</p>}
+          {hostMismatch && (
+            <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+              The certificate was requested for <span className="font-medium">{s.domain}</span> but FlareCard is now reached as{" "}
+              <span className="font-medium">{s.currentHost}</span>. Use “Renew now” to request one for the current hostname.
+            </p>
+          )}
+        </div>
+
+        {s.source === "external" ? (
+          <p className="text-muted-foreground text-xs">
+            A certificate is provided through <code>PROFILE_SIGNING_KEY</code>/<code>PROFILE_SIGNING_CERT</code> or the{" "}
+            <code>SIGNING_CERTS</code> binding; it takes precedence over automatic signing.
+          </p>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="space-y-2">
+              <Label htmlFor="acme-email">Contact e-mail for Let's Encrypt (optional)</Label>
+              <Input
+                id="acme-email"
+                type="email"
+                placeholder="it@example.com"
+                value={emailValue}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={busy}
+              />
+              <p className="text-muted-foreground text-xs">Only used for expiry warnings from Let's Encrypt. Requires the server to be reachable from the internet as {s.currentHost}.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Label htmlFor="signing-enabled" className="text-sm font-medium">
+                Sign profiles automatically
+              </Label>
+              <Switch id="signing-enabled" checked={s.enabled} disabled={busy} onCheckedChange={(v) => toggle.mutate(v)} aria-label="Sign profiles automatically" />
+            </div>
+            {s.enabled && (
+              <div className="sm:col-span-2">
+                <Button type="button" variant="outline" size="sm" disabled={busy || s.inProgress} onClick={() => renew.mutate()}>
+                  {renew.isPending ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+                  Renew now
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="text-muted-foreground text-xs">
+          Let's Encrypt verifies ownership by fetching <code>http://{s.currentHost}/.well-known/acme-challenge/…</code>, which
+          FlareCard answers itself. On Cloudflare nothing else is needed; behind your own reverse proxy make sure that path is
+          forwarded to FlareCard.{" "}
+          {s.acmeDirectory.includes("staging") && <span className="text-amber-700 dark:text-amber-300">Using the Let's Encrypt staging directory: certificates will not be trusted by devices.</span>}
+        </p>
       </CardContent>
     </Card>
   );

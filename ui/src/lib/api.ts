@@ -94,6 +94,28 @@ export interface Settings {
   userCount: number;
 }
 
+export interface SigningStatus {
+  source: "external" | "managed" | "none";
+  enabled: boolean;
+  email: string | null;
+  domain: string | null;
+  currentHost: string | null;
+  certificate: {
+    subject: string | null;
+    dnsNames: string[];
+    notBefore: string;
+    notAfter: string;
+    daysLeft: number;
+    algorithm: string;
+  } | null;
+  phase: "idle" | "ordering" | "challenging" | "finalizing" | "issued" | "error";
+  message: string;
+  error: string | null;
+  inProgress: boolean;
+  renewalDue: boolean;
+  acmeDirectory: string;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -157,6 +179,11 @@ export const api = {
     request<{ user: PublicUser }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
   me: () => request<{ user: PublicUser | null }>("/auth/me"),
+
+  signing: () => request<SigningStatus>("/signing"),
+  updateSigning: (body: { enabled: boolean; email?: string }) =>
+    request<SigningStatus>("/signing", { method: "PUT", body: JSON.stringify(body) }),
+  renewSigning: () => request<SigningStatus>("/signing/renew", { method: "POST" }),
 
   settings: () => request<Settings>("/settings"),
   updateSettings: (patch: Partial<Pick<Settings, "addressbookName" | "addressbookDescription" | "lockMarker">>) =>

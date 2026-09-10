@@ -33,6 +33,8 @@ export function UsersPage() {
   const qc = useQueryClient();
   const { user: me } = useAuth();
   const users = useQuery({ queryKey: ["users"], queryFn: api.users });
+  const signing = useQuery({ queryKey: ["signing"], queryFn: api.signing, staleTime: 60_000 });
+  const profilesSigned = signing.data ? signing.data.source !== "none" && (signing.data.source === "external" || signing.data.enabled) : null;
   const [creating, setCreating] = useState(false);
   const [secret, setSecret] = useState<{ username: string; password: string; created: boolean } | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "reset" | "delete"; user: PublicUser } | null>(null);
@@ -74,6 +76,17 @@ export function UsersPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
           <p className="text-muted-foreground text-sm">
             Each person gets an app password for CardDAV. Admins can also sign in here.
+            {profilesSigned === false && (
+              <>
+                {" "}
+                Downloaded profiles are unsigned;{" "}
+                <Link to="/setup" className="hover:text-foreground underline underline-offset-2">
+                  enable profile signing
+                </Link>{" "}
+                so iPhones show them as “Verified”.
+              </>
+            )}
+            {profilesSigned === true && <> Downloaded profiles are signed.</>}
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>
