@@ -27,6 +27,7 @@ with an admin web UI for maintaining contacts and users.
   - [Backups](#backups)
 - [Admin UI](#admin-ui)
   - [Lock marker on devices](#lock-marker-on-devices)
+  - [Signed profiles](#signed-profiles)
 - [Client setup](#client-setup)
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
@@ -152,6 +153,9 @@ Environment / secrets:
 | `AUTH_RATE_LIMIT_IP` | Var, optional (default `60`). Failed auth attempts allowed per client IP per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_USER` | Var, optional (default `15`). Failed auth attempts allowed per username per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Var, optional (default `600`). Rate-limit window; a successful login resets the counters. |
+| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates (default: Let's Encrypt production; use the staging URL while testing). |
+| `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | Secrets, optional. Your own PEM key and certificate chain for signing profiles; takes precedence over the automatic certificate. |
+| `SIGNING_CERTS` | Binding, optional (workerd). `disk` service with `privkey.pem`+`fullchain.pem` or `<host>.key`+`<host>.crt`, e.g. your Caddy/certbot directory. |
 
 Rate limiting is built in and runtime-neutral: it lives in memory inside the single Durable
 Object, counts only failed Basic-auth and admin-login attempts (so correctly configured devices are
@@ -188,7 +192,10 @@ The exact same bundle runs on open-source workerd. `workerd.capnp` configures:
 - the Worker module (`dist/worker/index.js`), compatibility date matching `wrangler.jsonc`;
 - a SQLite-enabled Durable Object namespace with **`localDisk`** storage under `./data`;
 - a read-only `disk` service for the built admin UI bound as `ASSETS`;
-- config/secrets pulled from the process environment (`fromEnvironment`).
+- config/secrets pulled from the process environment (`fromEnvironment`);
+- an `internet` network service so the Worker can talk to Let's Encrypt when automatic profile
+  signing is enabled (remove it if you never use that feature), and a commented-out
+  `signing-certs` disk service for reusing the proxy's certificate (see [Signed profiles](#signed-profiles)).
 
 ```bash
 npm install
@@ -273,6 +280,14 @@ server {
 Set `PUBLIC_HOST=contacts.example.com` so the generated `.mobileconfig` profiles use the public
 hostname and port 443 regardless of how the proxy forwards.
 
+If you enable **automatic profile signing**, Let's Encrypt fetches
+`http://contacts.example.com/.well-known/acme-challenge/<token>` and FlareCard must answer it.
+Both configurations above already work: the port-80 redirect to HTTPS is followed by Let's Encrypt
+and the HTTPS server proxies the path to workerd. Only if something else owns
+`/.well-known/acme-challenge/` on port 80 (certbot `--webroot`, Caddy's own challenge handler is
+fine) do you need to forward that path explicitly, or skip ACME in FlareCard and reuse the proxy's
+certificate through the `SIGNING_CERTS` binding instead.
+
 ### Backups
 
 All state lives in the Durable Object storage directory configured in `workerd.capnp`
@@ -347,6 +362,41 @@ The switch lives under **Device setup → Lock marker on devices** (default on).
 every contact with a fresh change sequence, so ctag and sync-token move and every device
 re-downloads the address book on its next sync.
 
+### Signed profiles
+
+An unsigned `.mobileconfig` installs fine but iOS/macOS label it **"Not Signed"** in red. FlareCard
+can wrap every downloaded profile in a CMS/PKCS#7 `SignedData` envelope (what
+`openssl smime -sign -nodetach` produces) so devices show **"Verified"** and the signer's name.
+Three ways to get a certificate, in order of precedence:
+
+1. **Your own PEM material** — `PROFILE_SIGNING_KEY` + `PROFILE_SIGNING_CERT` secrets (leaf first,
+   then intermediates). RSA and ECDSA (P-256/P-384) keys in PKCS#8, PKCS#1 or SEC1 PEM are accepted.
+2. **The reverse proxy's certificate** (workerd only) — bind a `disk` service as `SIGNING_CERTS`
+   pointing at the directory Caddy or certbot maintains; FlareCard reads the current key and chain on
+   each download, so renewals are picked up automatically.
+3. **Automatic (recommended on Cloudflare)** — **Device setup → Profile signing → Sign profiles
+   automatically**. FlareCard is its own ACME client: it generates an RSA key, orders a certificate
+   for `PUBLIC_HOST` from Let's Encrypt, answers the `http-01` challenge on
+   `/.well-known/acme-challenge/` itself, stores key, chain and account in the Durable Object and
+   signs with the result. Renewal is lazy: whenever an admin request or profile download finds the
+   certificate within 30 days (or a third of its lifetime) of expiry, a renewal runs in the
+   background while the still-valid certificate keeps signing. No cron triggers, alarms, DNS API
+   tokens or extra Cloudflare products are involved; the whole flow works the same on workerd.
+
+Requirements for the automatic mode: `PUBLIC_HOST` (or the host you open the admin UI with) must be a
+public DNS name that reaches FlareCard over HTTP/HTTPS. Any publicly trusted certificate works for
+profile signing; iOS shows the certificate's common name under "Signed by". Failures (host not
+reachable, rate limits) are shown on the card and retried with backoff; profiles fall back to
+unsigned until a certificate exists. Set `ACME_DIRECTORY_URL` to the Let's Encrypt staging directory
+to rehearse without hitting production rate limits (staging certificates are not trusted by devices).
+
+Verify a downloaded profile yourself:
+
+```bash
+openssl cms -verify -inform DER -in flarecard-jane.mobileconfig -purpose any \
+  -CAfile <(curl -s https://letsencrypt.org/certs/isrgrootx1.pem)     # prints the plist on success
+```
+
 ---
 
 ## Client setup
@@ -390,7 +440,18 @@ npm run dav:smoke # curl walkthrough against a running server (BASE, USER_NAME, 
 ```
 
 Tests run the Hono app directly against the in-memory `Storage` implementation, so they need no
-Cloudflare tooling and finish in ~2 seconds.
+Cloudflare tooling and finish in a few seconds. The signing tests include an in-process ACME server
+and, when `openssl` is on the `PATH`, verify every produced CMS blob with `openssl cms -verify`.
+
+An end-to-end run against [Pebble](https://github.com/letsencrypt/pebble), Let's Encrypt's test CA,
+is skipped unless you point it at a running instance:
+
+```bash
+go install github.com/letsencrypt/pebble/v2/cmd/{pebble,pebble-challtestsrv}@latest
+pebble-challtestsrv -dnsserver 127.0.0.1:8053 -doh "" -http01 "" -https01 "" -tlsalpn01 "" -defaultIPv4 127.0.0.1 -defaultIPv6 "" &
+PEBBLE_VA_NOSLEEP=1 pebble -config pebble.json -dnsserver 127.0.0.1:8053 -strict &   # httpPort 5002
+PEBBLE_DIRECTORY=https://127.0.0.1:14000/dir PEBBLE_HTTP_PORT=5002 npx vitest run test/pebble.test.ts
+```
 
 ---
 
