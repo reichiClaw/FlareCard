@@ -28,7 +28,12 @@
     // Leave empty to derive it from the incoming Host header.
     "PUBLIC_HOST": "",
     // Username of the first admin created from ADMIN_BOOTSTRAP_PASSWORD.
-    "ADMIN_BOOTSTRAP_USERNAME": "admin"
+    "ADMIN_BOOTSTRAP_USERNAME": "admin",
+    // Built-in auth rate limiting: failed attempts allowed per client IP / per username
+    // within the window before 429s are returned. Successful logins reset the counters.
+    "AUTH_RATE_LIMIT_IP": "60",
+    "AUTH_RATE_LIMIT_USER": "15",
+    "AUTH_RATE_LIMIT_WINDOW_SECONDS": "600"
   }
 
   // Secrets (set with `wrangler secret put <NAME>` or in .dev.vars for local dev):

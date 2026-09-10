@@ -3,6 +3,7 @@ import type { Services } from "./app";
 import type { Contact, User } from "./storage/types";
 import { SESSION_COOKIE, parseCookies } from "./lib/auth";
 import { generateAppPassword, hashPassword } from "./lib/crypto";
+import { clientIp, tooManyRequests } from "./lib/ratelimit";
 import { ContactValidationError } from "./lib/contacts";
 import { DEMO_CONTACTS } from "./lib/demo";
 import { buildMobileConfig } from "./lib/mobileconfig";
@@ -99,9 +100,15 @@ function contactSummary(services: Services, c: Contact) {
   };
 }
 
+function formatRetry(seconds: number): string {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
 export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   const api = new Hono<{ Variables: Variables }>();
-  const { storage, auth, contacts } = services;
+  const { storage, auth, contacts, rateLimiter } = services;
 
   api.get("/status", async (c) => {
     const { host } = publicHost(services, c.req.raw);
@@ -113,9 +120,19 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
     if (!username || !password) return c.json({ error: "Username and password are required" }, 400);
+    const ip = clientIp(c.req.raw);
+    const limit = rateLimiter.check(ip, username);
+    if (!limit.allowed) {
+      c.header("Retry-After", String(limit.retryAfterSeconds));
+      return c.json({ error: `Too many failed attempts. Try again in ${formatRetry(limit.retryAfterSeconds)}.` }, 429);
+    }
     const result = await auth.authenticatePassword(username, password);
-    if (!result.ok) return c.json({ error: "Invalid username or password" }, 401);
+    if (!result.ok) {
+      rateLimiter.recordFailure(ip, username);
+      return c.json({ error: "Invalid username or password" }, 401);
+    }
     if (result.user.role !== "admin") return c.json({ error: "Only administrators can sign in to the admin UI" }, 403);
+    rateLimiter.recordSuccess(ip, result.user.username);
     const token = await auth.createSessionToken(result.user);
     const secure = new URL(c.req.url).protocol === "https:";
     c.header("Set-Cookie", sessionCookie(token, secure, 12 * 60 * 60));
@@ -127,18 +144,31 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     return c.json({ ok: true });
   });
 
-  const resolveAdmin = async (request: Request): Promise<{ user: User; viaCookie: boolean } | null> => {
+  const resolveAdmin = async (
+    request: Request,
+  ): Promise<{ user: User; viaCookie: boolean } | { rateLimited: Response } | null> => {
     const cookies = parseCookies(request.headers.get("cookie"));
     const fromCookie = await auth.verifySessionToken(cookies[SESSION_COOKIE]);
     if (fromCookie) return { user: fromCookie, viaCookie: true };
-    const basic = await auth.authenticateBasic(request.headers.get("authorization"));
-    if (basic.ok && basic.user.role === "admin") return { user: basic.user, viaCookie: false };
+    const header = request.headers.get("authorization");
+    if (!header) return null;
+    const ip = clientIp(request);
+    const username = auth.parseBasic(header)?.username ?? null;
+    const limit = rateLimiter.check(ip, username);
+    if (!limit.allowed) return { rateLimited: tooManyRequests(limit) };
+    const basic = await auth.authenticateBasic(header);
+    if (basic.ok && basic.user.role === "admin") {
+      rateLimiter.recordSuccess(ip, basic.user.username);
+      return { user: basic.user, viaCookie: false };
+    }
+    if (!basic.ok && basic.reason !== "missing") rateLimiter.recordFailure(ip, username);
     return null;
   };
 
   // Session probe used by the UI on load; answers 200 either way to keep the console quiet.
   api.get("/auth/me", async (c) => {
     const resolved = await resolveAdmin(c.req.raw);
+    if (resolved && "rateLimited" in resolved) return resolved.rateLimited;
     return c.json({ user: resolved ? publicUser(resolved.user) : null });
   });
 
@@ -146,6 +176,7 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   api.use("*", async (c, next) => {
     const request = c.req.raw;
     const resolved = await resolveAdmin(request);
+    if (resolved && "rateLimited" in resolved) return resolved.rateLimited;
     if (!resolved) return c.json({ error: "Unauthorized" }, 401);
     const { user, viaCookie } = resolved;
     if (viaCookie && request.method !== "GET" && request.method !== "HEAD") {

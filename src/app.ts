@@ -3,11 +3,12 @@ import type { Storage } from "./storage/types";
 import { AuthService, type AuthEnv } from "./lib/auth";
 import { ContactService } from "./lib/contacts";
 import { DAV_ROOT } from "./dav/paths";
-import { handleDav, optionsResponse, unauthorized } from "./dav/handler";
+import { DAV_HEADER, handleDav, optionsResponse, unauthorized } from "./dav/handler";
 import { loadDavSettings } from "./dav/context";
 import { adminApi } from "./api";
+import { AuthRateLimiter, type AuthRateLimitEnv, clientIp, tooManyRequests } from "./lib/ratelimit";
 
-export interface AppEnv extends AuthEnv {
+export interface AppEnv extends AuthEnv, AuthRateLimitEnv {
   PUBLIC_HOST?: string;
 }
 
@@ -20,6 +21,7 @@ export interface Services {
   storage: Storage;
   auth: AuthService;
   contacts: ContactService;
+  rateLimiter: AuthRateLimiter;
   env: AppEnv;
 }
 
@@ -34,6 +36,7 @@ export function createApp(deps: AppDeps): Hono {
     env: deps.env,
     auth: new AuthService(deps.storage, deps.env),
     contacts: new ContactService(deps.storage),
+    rateLimiter: new AuthRateLimiter(deps.env),
   };
   const app = new Hono();
   let bootstrapped = false;
@@ -54,8 +57,18 @@ export function createApp(deps: AppDeps): Hono {
   const dav = async (c: { req: { raw: Request } }) => {
     const request = c.req.raw;
     if (request.method.toUpperCase() === "OPTIONS") return optionsResponse();
-    const result = await services.auth.authenticateBasic(request.headers.get("authorization"));
-    if (!result.ok) return unauthorized();
+    const header = request.headers.get("authorization");
+    const ip = clientIp(request);
+    const username = services.auth.parseBasic(header)?.username ?? null;
+    const limit = services.rateLimiter.check(ip, username);
+    if (!limit.allowed) return tooManyRequests(limit, { DAV: DAV_HEADER });
+    const result = await services.auth.authenticateBasic(header);
+    if (!result.ok) {
+      // Only attempts that carried credentials count; the initial unauthenticated probe does not.
+      if (result.reason !== "missing") services.rateLimiter.recordFailure(ip, username);
+      return unauthorized();
+    }
+    services.rateLimiter.recordSuccess(ip, result.user.username);
     return handleDav(request, {
       storage: services.storage,
       auth: services.auth,

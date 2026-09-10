@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { createApp } from "../src/app";
+import { createApp, type AppEnv } from "../src/app";
 import { MemoryStorage } from "../src/storage/memory";
 import { hashPassword } from "../src/lib/crypto";
 import { findChild, findChildren, parseXml, type XmlNode, NS_DAV } from "../src/lib/xml";
@@ -17,7 +17,9 @@ export function basic(username: string, password: string): string {
   return `Basic ${btoa(`${username}:${password}`)}`;
 }
 
-export async function makeApp(opts: { bootstrapPassword?: string | null } = {}): Promise<TestApp> {
+export async function makeApp(
+  opts: { bootstrapPassword?: string | null; env?: Partial<AppEnv> } = {},
+): Promise<TestApp> {
   const storage = new MemoryStorage();
   const bootstrapPassword = opts.bootstrapPassword === undefined ? ADMIN_PASSWORD : opts.bootstrapPassword;
   const app = createApp({
@@ -26,6 +28,7 @@ export async function makeApp(opts: { bootstrapPassword?: string | null } = {}):
       ADMIN_BOOTSTRAP_PASSWORD: bootstrapPassword ?? undefined,
       ADMIN_BOOTSTRAP_USERNAME: "admin",
       SESSION_SECRET: "test-session-secret",
+      ...opts.env,
     },
   });
   if (bootstrapPassword) {

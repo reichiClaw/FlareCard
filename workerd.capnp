@@ -42,5 +42,9 @@ const flarecard :Workerd.Worker = (
     (name = "ADMIN_BOOTSTRAP_USERNAME", fromEnvironment = "ADMIN_BOOTSTRAP_USERNAME"),
     (name = "SESSION_SECRET", fromEnvironment = "SESSION_SECRET"),
     (name = "PUBLIC_HOST", fromEnvironment = "PUBLIC_HOST"),
+    # Optional auth rate-limit tuning (defaults: 60 per IP, 15 per user, 600 s window).
+    (name = "AUTH_RATE_LIMIT_IP", fromEnvironment = "AUTH_RATE_LIMIT_IP"),
+    (name = "AUTH_RATE_LIMIT_USER", fromEnvironment = "AUTH_RATE_LIMIT_USER"),
+    (name = "AUTH_RATE_LIMIT_WINDOW_SECONDS", fromEnvironment = "AUTH_RATE_LIMIT_WINDOW_SECONDS"),
   ],
 );
