@@ -514,6 +514,11 @@ For each person:
    - the manual instructions from the **Device setup** page (iOS/macOS and Android/DAVx5 tabs).
 3. On the device the account appears in Contacts as the address book name ("Company Directory" by
    default; change it under **Device setup → Address book name**).
+4. Every name on the device ends with **🔒** ("Ada Lovelace 🔒"). That is FlareCard's lock marker:
+   devices cannot display that a contact is read-only, so the marker is appended to the name in the
+   vCards sent during sync. It is not stored and does not appear in the admin UI. Turn it off under
+   **Device setup → Lock marker on devices**; changing the switch makes every device re-download the
+   address book on its next sync.
 
 Operational tasks:
 

@@ -26,6 +26,7 @@ with an admin web UI for maintaining contacts and users.
   - [Reverse proxy with TLS (Caddy / nginx)](#reverse-proxy-with-tls)
   - [Backups](#backups)
 - [Admin UI](#admin-ui)
+  - [Lock marker on devices](#lock-marker-on-devices)
 - [Client setup](#client-setup)
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
@@ -322,17 +323,29 @@ have CardDAV credentials.
   emails, postal addresses, websites, birthday, notes, photo). Photos are downscaled to 512px
   JPEG in the browser and capped at 512 KB server-side. Bulk **import** from `.vcf` (2.1/3.0/4.0)
   or CSV (Google/Outlook/generic headers), **export** everything as one `.vcf`, and a
-  **Load demo contacts** button. A lock icon after every name is a reminder that contacts are
-  locked for devices: they sync read-only and can only be changed here.
+  **Load demo contacts** button.
 - **Users** — create (an app password is generated and shown **once**), enable/disable, change
   role, reset app password, delete, and **Download iOS/macOS profile** (`.mobileconfig` with a
   `com.apple.carddav.account` payload prefilled with host, username and principal URL).
-- **Device setup** — server URLs to copy, step-by-step instructions for iOS/macOS and DAVx5, and
-  the address book display name/description.
+- **Device setup** — server URLs to copy, step-by-step instructions for iOS/macOS and DAVx5, the
+  address book display name/description, and the **lock marker** switch (see below).
 - Empty, loading and error states are covered; the layout collapses to a single column with a
   menu on phones.
 
 Scripts and other tooling can use the same `/api/*` endpoints with **Basic auth as an admin**.
+
+### Lock marker on devices
+
+Phones and Macs have no way to show that a contact is read-only. FlareCard therefore appends
+**🔒** to the displayed name of every card it serves over CardDAV: `FN:Ada Lovelace 🔒` and the
+family name in `N` (or the given name if there is no family name; company cards without a personal
+name get it on `ORG`). The marker exists **only in the sync output**: stored vCards, the admin UI,
+search and `.vcf` export are unchanged. The ETag of a served card is the hash of what is actually
+sent, so conditional requests keep working.
+
+The switch lives under **Device setup → Lock marker on devices** (default on). Toggling it re-stamps
+every contact with a fresh change sequence, so ctag and sync-token move and every device
+re-downloads the address book on its next sync.
 
 ---
 
@@ -386,7 +399,8 @@ Cloudflare tooling and finish in ~2 seconds.
 - **Read-only is enforced server-side.** iOS/macOS Contacts and DAVx5 do not reliably honour
   `current-user-privilege-set`, so a user *can* edit or delete a contact locally. The device's
   `PUT`/`DELETE` is rejected with `403`; the change shows a sync error and is **reverted on the
-  next sync**. There is no way to grey out the edit button on the device.
+  next sync**. There is no way to grey out the edit button on the device; the 🔒 lock marker in
+  names is the visible hint that a contact is managed centrally.
 - Unknown or foreign `sync-token`s return **`507`** (with a `DAV:valid-sync-token` error body).
   Clients handle this by starting a fresh sync with an empty token.
 - Contacts are normalized to a fixed set of vCard 3.0 properties on import; exotic or `X-`
