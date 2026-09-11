@@ -27,6 +27,7 @@ with an admin web UI for maintaining contacts and users.
   - [Backups](#backups)
 - [Admin UI](#admin-ui)
   - [Lock marker on devices](#lock-marker-on-devices)
+  - [Forced re-sync (scheduled push)](#forced-re-sync-scheduled-push)
   - [Signed profiles](#signed-profiles)
 - [Client setup](#client-setup)
 - [Testing](#testing)
@@ -343,7 +344,8 @@ have CardDAV credentials.
   role, reset app password, delete, and **Download iOS/macOS profile** (`.mobileconfig` with a
   `com.apple.carddav.account` payload prefilled with host, username and principal URL).
 - **Device setup** — server URLs to copy, step-by-step instructions for iOS/macOS and DAVx5, the
-  address book display name/description, and the **lock marker** switch (see below).
+  address book display name/description, the **lock marker** switch, the **forced re-sync**
+  schedule and the **profile signing** card (see below).
 - Empty, loading and error states are covered; the layout collapses to a single column with a
   menu on phones.
 
@@ -361,6 +363,42 @@ sent, so conditional requests keep working.
 The switch lives under **Device setup → Lock marker on devices** (default on). Toggling it re-stamps
 every contact with a fresh change sequence, so ctag and sync-token move and every device
 re-downloads the address book on its next sync.
+
+### Forced re-sync (scheduled push)
+
+CardDAV is pull-only: a device downloads only the cards whose ETag changed since its last
+sync-token. If someone deletes or edits a contact on their phone, the server rejects the change
+(`403`), but the local copy is only repaired once the client decides to re-fetch that card. A
+**forced re-sync** removes the waiting: it gives **every** contact a new revision — `REV` is set to
+the run time, which changes the vCard body and therefore its ETag, and each card gets a fresh
+change sequence. On their next sync all devices see every contact as modified and download the
+whole address book again, restoring anything that was changed locally.
+
+**Device setup → Forced re-sync** offers:
+
+- **Force re-sync now** — one click, runs immediately and shows how many contacts were re-stamped.
+- A **schedule**: *Off*, *Every N hours* (1–168, counted from the previous run), *Daily at HH:MM*
+  or *Weekly on a weekday at HH:MM*, each in an IANA time zone (`Europe/Berlin`, `America/New_York`,
+  …). Daylight-saving transitions are handled; the card shows the last and the next run.
+
+FlareCard deliberately uses no cron triggers or alarms (see [Architecture](#architecture)), so the
+schedule is evaluated **lazily**: every incoming request — a phone syncing, DAVx5 polling, an admin
+opening the UI — first checks whether a run is due and performs it before the request is served.
+With 200 devices syncing, the first sync after the scheduled time triggers the run and already
+receives the new revisions. Missed occurrences (no traffic for days) collapse into a single run
+and the schedule continues from the actual run time. The same endpoints are available to scripts:
+
+```bash
+curl -u admin:… https://contacts.example.com/api/resync                       # status
+curl -u admin:… -X POST https://contacts.example.com/api/resync/run           # run now
+curl -u admin:… -X PUT -H 'Content-Type: application/json' \
+  -d '{"mode":"daily","time":"03:00","timeZone":"Europe/Berlin"}' \
+  https://contacts.example.com/api/resync                                     # schedule
+```
+
+A run rewrites `REV` in the stored vCards (and moves `updatedAt`); names, numbers and every other
+property are untouched. Pick a quiet time: each run makes every device download the full address
+book once (a few thousand small cards per device).
 
 ### Signed profiles
 
@@ -434,7 +472,7 @@ Every person needs their own **username + app password** (Users page). Replace
 ## Testing
 
 ```bash
-npm test          # Vitest: auth, vCard, ETag/ctag/sync-token, PROPFIND/REPORT XML, 403s
+npm test          # Vitest: auth, vCard, ETag/ctag/sync-token, PROPFIND/REPORT XML, 403s, re-sync schedule, signing
 npm run typecheck # worker + UI
 npm run dav:smoke # curl walkthrough against a running server (BASE, USER_NAME, PASS env vars; SEED=1 to seed)
 ```
@@ -461,7 +499,9 @@ PEBBLE_DIRECTORY=https://127.0.0.1:14000/dir PEBBLE_HTTP_PORT=5002 npx vitest ru
   `current-user-privilege-set`, so a user *can* edit or delete a contact locally. The device's
   `PUT`/`DELETE` is rejected with `403`; the change shows a sync error and is **reverted on the
   next sync**. There is no way to grey out the edit button on the device; the 🔒 lock marker in
-  names is the visible hint that a contact is managed centrally.
+  names is the visible hint that a contact is managed centrally, and a
+  [forced re-sync](#forced-re-sync-scheduled-push) (manual or scheduled) repairs all devices
+  without waiting for them.
 - Unknown or foreign `sync-token`s return **`507`** (with a `DAV:valid-sync-token` error body).
   Clients handle this by starting a fresh sync with an empty token.
 - Contacts are normalized to a fixed set of vCard 3.0 properties on import; exotic or `X-`

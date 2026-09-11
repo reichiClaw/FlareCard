@@ -530,6 +530,36 @@ Operational tasks:
   the person's device stay there until they remove the account; FlareCard cannot wipe devices.
 - **Promote to admin** → *Make admin* gives access to the admin UI. Admins still cannot edit
   contacts from their phone; edits are UI-only by design.
+- **Someone deleted or edited contacts on their phone** → the server rejected it, but the phone
+  only repairs its copy when it re-fetches that card. Use **Device setup → Forced re-sync →
+  Force re-sync now** to push the whole address book to every device on its next sync, or set a
+  schedule (see below).
+
+### Forced re-sync schedule
+
+**Device setup → Forced re-sync** re-stamps every contact with a new revision (`REV`) and ETag so
+that every device downloads the complete address book again on its next sync. Options:
+
+| Schedule | Meaning |
+|---|---|
+| *Off — only on demand* | Nothing automatic; the **Force re-sync now** button still works. |
+| *Every N hours* | 1–168 hours, counted from the previous run. |
+| *Daily at a fixed time* | `HH:MM` in the chosen IANA time zone (e.g. `Europe/Berlin`). |
+| *Weekly on a fixed day* | Weekday + `HH:MM` in the chosen time zone. |
+
+Click **Save schedule**; the card shows the description, the **last run** (time, number of contacts,
+manual/scheduled) and the **next run**. Daylight-saving changes are handled by the time zone.
+
+How it runs on Cloudflare: FlareCard uses no Cron Triggers or alarms, so nothing needs to be
+configured in the dashboard. The Durable Object checks the schedule on **every incoming request**
+and performs a due run before serving it. With devices syncing around the clock, the first sync
+after the scheduled time triggers the run and immediately receives the new revisions. If the
+Worker receives no traffic for a while (nights, weekends), missed occurrences collapse into a
+single run on the next request and the schedule continues from that run.
+
+Choose a quiet time (for example 03:00 local): each run makes every device download the full
+address book once, which shows up as a short burst of requests in the Worker metrics. The schedule
+and run history are stored in the Durable Object, so they survive deployments.
 
 ### Signed profiles ("Verified" instead of "Not Signed")
 
@@ -860,6 +890,17 @@ The signing certificate does not chain to a root the device trusts: you are usin
 directory, or `PROFILE_SIGNING_CERT` lacks the intermediate certificate, or the certificate expired
 (the card shows the validity). Automatic Let's Encrypt certificates are always trusted by current
 iOS/macOS versions.
+
+**The scheduled re-sync ran later than the configured time.**
+Expected within a few minutes: the schedule is evaluated on incoming requests, so the run happens
+with the first device sync or admin page load after the due time. If nobody connects for hours, the
+run waits for the next request and later occurrences are merged into that single run. A
+"Force re-sync now" click runs immediately.
+
+**Contacts deleted on a phone did not come back after the re-sync.**
+Check **Device setup → Forced re-sync → Last run** to confirm the run happened, then make the device
+sync (open Contacts and pull down, or toggle the account off/on in Settings). iOS may take up to an
+hour to sync on its own; DAVx5 follows its configured interval.
 
 **429 "Too many failed authentication attempts" (from FlareCard).**
 The built-in rate limiter tripped: more than `AUTH_RATE_LIMIT_USER` (default 15) wrong passwords for
