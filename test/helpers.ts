@@ -19,13 +19,14 @@ export function basic(username: string, password: string): string {
 }
 
 export async function makeApp(
-  opts: { bootstrapPassword?: string | null; env?: Partial<AppEnv>; fetch?: FetchLike } = {},
+  opts: { bootstrapPassword?: string | null; env?: Partial<AppEnv>; fetch?: FetchLike; now?: () => Date } = {},
 ): Promise<TestApp> {
   const storage = new MemoryStorage();
   const bootstrapPassword = opts.bootstrapPassword === undefined ? ADMIN_PASSWORD : opts.bootstrapPassword;
   const app = createApp({
     storage,
     fetch: opts.fetch,
+    now: opts.now,
     acmePollIntervalMs: 10,
     env: {
       ADMIN_BOOTSTRAP_PASSWORD: bootstrapPassword ?? undefined,

@@ -10,6 +10,7 @@ import {
   propsToFields,
   searchTextOf,
   validateFields,
+  withRev,
 } from "./vcard";
 import { csvToFields } from "./csv";
 
@@ -72,6 +73,27 @@ export class ContactService {
         uid: c.uid,
         vcard: c.vcard,
         etag: c.etag,
+        displayName: c.displayName,
+        searchText: c.searchText,
+      });
+    }
+    return all.length;
+  }
+
+  /**
+   * Gives every contact a new revision: REV is set to `now`, which changes the
+   * vCard body and therefore its ETag, and each card gets a fresh seq. Devices
+   * see every contact as modified on their next sync and download the whole
+   * address book again, reverting anything edited or deleted locally.
+   */
+  async forceResync(now: Date = new Date()): Promise<number> {
+    const all = await this.storage.allContacts();
+    for (const c of all) {
+      const vcard = withRev(c.vcard, now);
+      await this.storage.upsertContact({
+        uid: c.uid,
+        vcard,
+        etag: await etagFor(vcard),
         displayName: c.displayName,
         searchText: c.searchText,
       });

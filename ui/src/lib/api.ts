@@ -116,6 +116,29 @@ export interface SigningStatus {
   acmeDirectory: string;
 }
 
+export type ResyncMode = "off" | "interval" | "daily" | "weekly";
+
+export interface ResyncSchedule {
+  mode: ResyncMode;
+  everyHours: number;
+  time: string;
+  weekday: number;
+  timeZone: string;
+}
+
+export interface ResyncRun {
+  at: string;
+  contacts: number;
+  reason: "schedule" | "manual";
+}
+
+export interface ResyncStatus {
+  schedule: ResyncSchedule;
+  lastRun: ResyncRun | null;
+  nextRun: string | null;
+  description: string;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -184,6 +207,10 @@ export const api = {
   updateSigning: (body: { enabled: boolean; email?: string }) =>
     request<SigningStatus>("/signing", { method: "PUT", body: JSON.stringify(body) }),
   renewSigning: () => request<SigningStatus>("/signing/renew", { method: "POST" }),
+
+  resync: () => request<ResyncStatus>("/resync"),
+  updateResync: (schedule: ResyncSchedule) => request<ResyncStatus>("/resync", { method: "PUT", body: JSON.stringify(schedule) }),
+  runResync: () => request<ResyncStatus & { run: ResyncRun }>("/resync/run", { method: "POST" }),
 
   settings: () => request<Settings>("/settings"),
   updateSettings: (patch: Partial<Pick<Settings, "addressbookName" | "addressbookDescription" | "lockMarker">>) =>

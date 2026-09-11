@@ -9,6 +9,7 @@ import { adminApi } from "./api";
 import { AuthRateLimiter, type AuthRateLimitEnv, clientIp, tooManyRequests } from "./lib/ratelimit";
 import { ProfileSigner, type SigningEnv } from "./lib/signing";
 import type { FetchLike } from "./lib/acme";
+import { ResyncScheduler } from "./lib/resync";
 
 export interface AppEnv extends AuthEnv, AuthRateLimitEnv, SigningEnv {
   PUBLIC_HOST?: string;
@@ -23,6 +24,8 @@ export interface AppDeps {
   waitUntil?: (p: Promise<unknown>) => void;
   /** ACME poll interval override (tests). */
   acmePollIntervalMs?: number;
+  /** Clock override for the re-sync schedule (tests). */
+  now?: () => Date;
 }
 
 export interface Services {
@@ -31,6 +34,7 @@ export interface Services {
   contacts: ContactService;
   rateLimiter: AuthRateLimiter;
   signer: ProfileSigner;
+  resync: ResyncScheduler;
   env: AppEnv;
   /** Schedules background work; falls back to fire-and-forget. */
   background: (p: Promise<unknown>) => void;
@@ -42,13 +46,15 @@ export interface Services {
  * this app can be exercised directly in tests with an in-memory Storage.
  */
 export function createApp(deps: AppDeps): Hono {
+  const contacts = new ContactService(deps.storage);
   const services: Services = {
     storage: deps.storage,
     env: deps.env,
     auth: new AuthService(deps.storage, deps.env),
-    contacts: new ContactService(deps.storage),
+    contacts,
     rateLimiter: new AuthRateLimiter(deps.env),
     signer: new ProfileSigner(deps.storage, deps.env, deps.fetch, undefined, deps.acmePollIntervalMs),
+    resync: new ResyncScheduler(deps.storage, contacts, deps.now),
     background: (p) => {
       const guarded = p.catch((e) => console.error("Background task failed", e));
       if (deps.waitUntil) deps.waitUntil(guarded);
@@ -61,6 +67,13 @@ export function createApp(deps: AppDeps): Hono {
     if (!bootstrapped) {
       await services.auth.ensureBootstrap();
       bootstrapped = await services.auth.isBootstrapped();
+    }
+    // Lazy scheduler: a due forced re-sync runs before the request is served so
+    // the very client that triggered it already sees the new revisions.
+    try {
+      await services.resync.tick();
+    } catch (e) {
+      console.error("Scheduled re-sync failed", e);
     }
     await next();
   });

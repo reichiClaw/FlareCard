@@ -1,7 +1,17 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { AppleIcon, BadgeCheckIcon, Loader2Icon, RefreshCwIcon, ShieldAlertIcon, ShieldOffIcon, SmartphoneIcon } from "lucide-react";
+import {
+  AppleIcon,
+  BadgeCheckIcon,
+  CalendarClockIcon,
+  CalendarOffIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  ShieldAlertIcon,
+  ShieldOffIcon,
+  SmartphoneIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -10,7 +20,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import type { SigningStatus } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { ResyncMode, ResyncSchedule, SigningStatus } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -147,6 +158,7 @@ export function SetupPage() {
 
       <AddressBookSettings name={s.addressbookName} description={s.addressbookDescription} />
       <LockMarkerSettings enabled={s.lockMarker} mark={s.lockMark} />
+      <ResyncScheduleSettings />
       <ProfileSigningSettings />
     </div>
   );
@@ -268,6 +280,212 @@ function LockMarkerSettings({ enabled, mark }: { enabled: boolean; mark: string 
             aria-label={`Append ${mark} to names during sync`}
           />
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+function knownTimeZones(): string[] {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+  try {
+    return intl.supportedValuesOf ? intl.supportedValuesOf("timeZone") : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function sameSchedule(a: ResyncSchedule, b: ResyncSchedule) {
+  return a.mode === b.mode && a.everyHours === b.everyHours && a.time === b.time && a.weekday === b.weekday && a.timeZone === b.timeZone;
+}
+
+function ResyncScheduleSettings() {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ["resync"], queryFn: api.resync });
+  const [draft, setDraft] = useState<ResyncSchedule | null>(null);
+  const save = useMutation({
+    mutationFn: (schedule: ResyncSchedule) => api.updateResync(schedule),
+    onSuccess: (res) => {
+      toast.success(res.schedule.mode === "off" ? "Scheduled re-sync switched off" : `Scheduled re-sync: ${res.description}`, {
+        description: res.nextRun ? `Next run ${formatDateTime(res.nextRun)}.` : undefined,
+      });
+      qc.setQueryData(["resync"], res);
+      setDraft(null);
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Save failed"),
+  });
+  const run = useMutation({
+    mutationFn: api.runResync,
+    onSuccess: (res) => {
+      toast.success("Forced re-sync started", {
+        description: `${res.run.contacts} contact${res.run.contacts === 1 ? "" : "s"} got a new revision; devices download them on their next sync.`,
+      });
+      qc.setQueryData(["resync"], res);
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Re-sync failed"),
+  });
+
+  if (status.isPending) return <Skeleton className="h-48 w-full" />;
+  if (status.isError) return <ErrorState error={status.error} onRetry={() => status.refetch()} />;
+  const saved = status.data.schedule;
+  const s = draft ?? saved;
+  const dirty = draft !== null && !sameSchedule(draft, saved);
+  const busy = save.isPending || run.isPending;
+  const update = (patch: Partial<ResyncSchedule>) => setDraft({ ...s, ...patch });
+  const timeZones = knownTimeZones();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    save.mutate(s);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle>Forced re-sync</CardTitle>
+          {saved.mode === "off" ? (
+            <Badge variant="outline">
+              <CalendarOffIcon /> No schedule
+            </Badge>
+          ) : (
+            <Badge variant="success">
+              <CalendarClockIcon /> {status.data.description}
+            </Badge>
+          )}
+        </div>
+        <CardDescription>
+          Devices only download what changed. A forced re-sync gives every contact a new revision and ETag, so every phone
+          and Mac downloads the whole address book again on its next sync — restoring contacts that were deleted or edited
+          locally. Run it on demand or on a schedule.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4 text-sm">
+          <dl className="text-muted-foreground grid gap-x-6 gap-y-1 text-xs sm:grid-cols-[auto_1fr]">
+            <dt className="font-medium">Last run</dt>
+            <dd>
+              {status.data.lastRun
+                ? `${formatDateTime(status.data.lastRun.at)} — ${status.data.lastRun.contacts} contact${status.data.lastRun.contacts === 1 ? "" : "s"} (${status.data.lastRun.reason === "manual" ? "manual" : "scheduled"})`
+                : "never"}
+            </dd>
+            <dt className="font-medium">Next run</dt>
+            <dd>{status.data.nextRun ? formatDateTime(status.data.nextRun) : "not scheduled"}</dd>
+          </dl>
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => run.mutate()}>
+            {run.isPending ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
+            Force re-sync now
+          </Button>
+        </div>
+
+        <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="resync-mode">Schedule</Label>
+            <Select value={s.mode} onValueChange={(v) => update({ mode: v as ResyncMode, timeZone: s.timeZone === "UTC" && v !== "interval" && v !== "off" ? browserTimeZone() : s.timeZone })}>
+              <SelectTrigger id="resync-mode" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off — only on demand</SelectItem>
+                <SelectItem value="interval">Every N hours</SelectItem>
+                <SelectItem value="daily">Daily at a fixed time</SelectItem>
+                <SelectItem value="weekly">Weekly on a fixed day</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {s.mode === "interval" && (
+            <div className="space-y-2">
+              <Label htmlFor="resync-hours">Every … hours</Label>
+              <Input
+                id="resync-hours"
+                type="number"
+                min={1}
+                max={168}
+                step={1}
+                value={s.everyHours}
+                onChange={(e) => update({ everyHours: Number(e.target.value) })}
+              />
+              <p className="text-muted-foreground text-xs">1 to 168 hours, counted from the previous run.</p>
+            </div>
+          )}
+
+          {s.mode === "weekly" && (
+            <div className="space-y-2">
+              <Label htmlFor="resync-weekday">Day of week</Label>
+              <Select value={String(s.weekday)} onValueChange={(v) => update({ weekday: Number(v) })}>
+                <SelectTrigger id="resync-weekday" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {WEEKDAYS.map((d, i) => (
+                    <SelectItem key={d} value={String(i)}>
+                      {d}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {(s.mode === "daily" || s.mode === "weekly") && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="resync-time">Time</Label>
+                <Input id="resync-time" type="time" step={60} value={s.time} onChange={(e) => update({ time: e.target.value })} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="resync-tz">Time zone</Label>
+                <Input
+                  id="resync-tz"
+                  list={timeZones.length ? "resync-tz-list" : undefined}
+                  value={s.timeZone}
+                  onChange={(e) => update({ timeZone: e.target.value })}
+                  placeholder="Europe/Berlin"
+                  required
+                />
+                {timeZones.length > 0 && (
+                  <datalist id="resync-tz-list">
+                    {timeZones.map((tz) => (
+                      <option key={tz} value={tz} />
+                    ))}
+                  </datalist>
+                )}
+                <p className="text-muted-foreground text-xs">IANA name, e.g. Europe/Berlin or America/New_York. Daylight-saving changes are handled.</p>
+              </div>
+            </>
+          )}
+
+          <div className="flex items-center gap-2 sm:col-span-2">
+            <Button type="submit" disabled={busy || !dirty}>
+              {save.isPending && <Loader2Icon className="animate-spin" />}
+              Save schedule
+            </Button>
+            {dirty && (
+              <Button type="button" variant="ghost" disabled={busy} onClick={() => setDraft(null)}>
+                Reset
+              </Button>
+            )}
+          </div>
+        </form>
+        <p className="text-muted-foreground text-xs">
+          A run marks every contact as changed; devices pick it up on their next sync (iOS/macOS usually within the hour, DAVx5
+          at its configured interval). FlareCard checks the schedule whenever a device or browser connects, so the run happens
+          with the first sync after the scheduled time.
+        </p>
       </CardContent>
     </Card>
   );

@@ -17,6 +17,7 @@ import {
 } from "./dav/context";
 import { LOCK_MARK } from "./lib/lockmark";
 import { SigningError } from "./lib/signing";
+import { ResyncError } from "./lib/resync";
 
 type Variables = { user: User };
 
@@ -115,7 +116,7 @@ function formatRetry(seconds: number): string {
 
 export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   const api = new Hono<{ Variables: Variables }>();
-  const { storage, auth, contacts, rateLimiter, signer } = services;
+  const { storage, auth, contacts, rateLimiter, signer, resync } = services;
 
   /** Kicks the ACME state machine in the background when there is something to do. */
   const nudgeSigner = async () => {
@@ -458,6 +459,26 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
     services.background(signer.advance());
     return c.json(await signer.status(host.hostname));
+  });
+
+  // -------------------------------------------------------------------------
+  // Forced re-sync (scheduled "push" of the whole address book to every device)
+
+  api.get("/resync", async (c) => c.json(await resync.status()));
+
+  api.put("/resync", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    try {
+      return c.json(await resync.setSchedule(body));
+    } catch (e) {
+      if (e instanceof ResyncError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+  });
+
+  api.post("/resync/run", async (c) => {
+    const run = await resync.runNow("manual");
+    return c.json({ ...(await resync.status()), run });
   });
 
   return api;

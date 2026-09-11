@@ -451,8 +451,29 @@ export function fieldsToVCard(f: ContactFields, rev: Date = new Date()): string 
     const typeName = f.photo.mediaType.split("/")[1].toUpperCase();
     lines.push(`PHOTO;ENCODING=b;TYPE=${typeName}:${f.photo.base64}`);
   }
-  lines.push(`REV:${rev.toISOString().replace(/\.\d{3}Z$/, "Z")}`);
+  lines.push(`REV:${formatRev(rev)}`);
   lines.push("END:VCARD");
+  return lines.map(foldLine).join("\r\n") + "\r\n";
+}
+
+export function formatRev(rev: Date): string {
+  return rev.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * Returns a copy of `vcard` whose REV property is `rev` (added before END:VCARD
+ * when missing). Everything else, including folding of other lines, is preserved.
+ */
+export function withRev(vcard: string, rev: Date): string {
+  const lines = unfoldLines(vcard);
+  const revLine = `REV:${formatRev(rev)}`;
+  const idx = lines.findIndex((l) => /^REV[;:]/i.test(l));
+  if (idx >= 0) {
+    lines[idx] = revLine;
+  } else {
+    const end = lines.findIndex((l) => /^END:VCARD$/i.test(l));
+    lines.splice(end >= 0 ? end : lines.length, 0, revLine);
+  }
   return lines.map(foldLine).join("\r\n") + "\r\n";
 }
 
