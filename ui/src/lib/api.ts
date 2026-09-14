@@ -97,6 +97,8 @@ export interface Settings {
 export interface SigningStatus {
   source: "external" | "managed" | "none";
   enabled: boolean;
+  managedBy: "worker" | "runner";
+  runnerInstalledAt: string | null;
   email: string | null;
   domain: string | null;
   currentHost: string | null;
@@ -204,7 +206,7 @@ export const api = {
   me: () => request<{ user: PublicUser | null }>("/auth/me"),
 
   signing: () => request<SigningStatus>("/signing"),
-  updateSigning: (body: { enabled: boolean; email?: string }) =>
+  updateSigning: (body: { enabled: boolean; email?: string; managedBy?: "worker" | "runner" }) =>
     request<SigningStatus>("/signing", { method: "PUT", body: JSON.stringify(body) }),
   renewSigning: () => request<SigningStatus>("/signing/renew", { method: "POST" }),
 

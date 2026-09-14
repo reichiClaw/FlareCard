@@ -55,4 +55,8 @@ declare module "node:http" {
   export function createServer(handler: (req: IncomingMessage, res: ServerResponse) => void): Server;
 }
 
-declare const process: { env: Record<string, string | undefined> };
+declare const process: {
+  env: Record<string, string | undefined>;
+  argv: string[];
+  exit(code?: number): never;
+};
