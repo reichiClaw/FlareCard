@@ -470,6 +470,8 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   // The private key stays in the Durable Object.
 
   api.post("/signing/csr", async (c) => {
+    // Drain any body a client may send; an unread body confuses some proxies.
+    await c.req.raw.arrayBuffer().catch(() => undefined);
     const host = publicHost(services, c.req.raw);
     try {
       return c.json(await signer.certificateRequest(host.hostname));

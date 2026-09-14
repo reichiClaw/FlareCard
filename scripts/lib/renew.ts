@@ -75,7 +75,7 @@ export async function renewSigningCertificate(opts: RenewOptions): Promise<Renew
     log(cert ? "Renewal forced." : "No certificate installed yet; requesting one.");
   }
 
-  const { domain, csr } = await fc.post<{ domain: string; csr: string }>("/api/signing/csr", {});
+  const { domain, csr } = await fc.post<{ domain: string; csr: string }>("/api/signing/csr");
   log(`CSR for ${domain} received from FlareCard (key stays there).`);
 
   const client = new AcmeClient(opts.acme.directoryUrl, opts.acme.fetch);
@@ -152,7 +152,7 @@ function flarecardApi(cfg: RenewOptions["flarecard"]) {
   };
   return {
     get: <T>(path: string) => call<T>("GET", path),
-    post: <T>(path: string, body: unknown) => call<T>("POST", path, body),
+    post: <T>(path: string, body?: unknown) => call<T>("POST", path, body),
     put: <T>(path: string, body: unknown) => call<T>("PUT", path, body),
   };
 }
