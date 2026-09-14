@@ -186,7 +186,7 @@ FlareCard needs one secret and accepts a handful of optional settings.
 | `AUTH_RATE_LIMIT_IP` | var | no (default `60`) | Failed login attempts allowed per client IP within the window before FlareCard answers `429 Too Many Requests`. |
 | `AUTH_RATE_LIMIT_USER` | var | no (default `15`) | Failed attempts allowed per username within the window, regardless of IP. Protects an individual account against distributed guessing. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | var | no (default `600`) | Length of the rate-limit window. Counters reset on a successful login and expire after the window. |
-| `ACME_DIRECTORY_URL` | var | no | ACME directory for the in-Worker signing client. Not useful on Cloudflare Workers (Let's Encrypt is unreachable from Workers, section 13); the external ACME runner has its own variable of the same name. |
+| `ACME_DIRECTORY_URL` | var | no | ACME directory for automatic profile signing (section 13). Empty = Let's Encrypt production. Set to `https://acme-staging-v02.api.letsencrypt.org/directory` to rehearse. |
 | `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | secret | no | Bring-your-own PEM key and certificate chain for signing profiles instead of the automatic Let's Encrypt certificate. Most deployments leave these unset. |
 
 The three `AUTH_RATE_LIMIT_*` variables control FlareCard's **built-in** brute-force protection. It
@@ -565,43 +565,25 @@ and run history are stored in the Durable Object, so they survive deployments.
 
 Out of the box the `.mobileconfig` is unsigned and iOS shows a red **Not Signed** notice during
 installation. It still installs; the notice is cosmetic but confusing for users. FlareCard can sign
-profiles with a free Let's Encrypt certificate and renew it automatically. On Cloudflare Workers this
-needs one helper outside Cloudflare, because of a platform limitation:
-
-> **Why the Worker cannot call Let's Encrypt itself.** Let's Encrypt's API is served through
-> Cloudflare too. A Worker that fetches another Cloudflare-fronted hostname cannot complete the TLS
-> handshake and receives **HTTP 525** ("orange-to-orange"). The switch **Sign profiles automatically**
-> therefore ends in *Failed: ACME directory … returned 525* on Cloudflare (it works on self-hosted
-> workerd). No DNS or SSL/TLS setting changes this; the card explains it when it happens.
-
-The fix is the **external ACME runner**: a scheduled GitHub Actions job in your fork that talks to
-Let's Encrypt on FlareCard's behalf. The private key stays in the Durable Object; the job only
-fetches a certificate signing request, completes the `http-01` challenge (served by FlareCard
-itself, which Let's Encrypt can reach without any problem) and uploads the issued certificate.
-
-Setup, once:
+profiles automatically with a free Let's Encrypt certificate, entirely by itself:
 
 1. Make sure the Worker is reachable under its public hostname (`workers.dev` or the custom domain
-   from section 9) and that `PUBLIC_HOST` matches it.
-2. Create a dedicated admin in FlareCard for the runner (**Users → New user**, role *Admin*, e.g.
-   `acme-runner`) and copy its app password.
-3. In your GitHub fork open **Settings → Secrets and variables → Actions**:
-   - *Variables*: `FLARECARD_URL` = `https://contacts.example.com` (no trailing path), optionally
-     `ACME_EMAIL` (Let's Encrypt expiry notices).
-   - *Secrets*: `FLARECARD_ADMIN_USER` = `acme-runner`, `FLARECARD_ADMIN_PASSWORD` = its password.
-4. Open **Actions → Renew profile-signing certificate → Run workflow** (the workflow ships with the
-   repository and is skipped until `FLARECARD_URL` exists). It finishes in about a minute; the log
-   ends with `Renewed — certificate for contacts.example.com valid until …`.
-5. Back in FlareCard, **Device setup → Profile signing** shows a green **Signed** badge, the
-   certificate's validity, an **External ACME runner** badge and the time of the last upload. Every
-   profile downloaded from the Users page is now a CMS `SignedData` envelope; iPhones and Macs show
-   **Verified** and the hostname as signer.
+   from section 9) and that `PUBLIC_HOST` matches it, or open the admin UI under that hostname.
+2. **Device setup → Profile signing**: optionally enter a contact e-mail (Let's Encrypt sends
+   expiry warnings there, which you should never receive because renewal is automatic) and switch
+   **Sign profiles automatically** on.
+3. Within about ten to thirty seconds the badge turns green **Signed** and the card shows the
+   certificate's validity. Every profile downloaded from the Users page from now on is a CMS
+   `SignedData` envelope; iPhones and Macs show **Verified** and the hostname as signer.
 
-From then on the workflow runs every night, checks the remaining validity through the API and only
-renews when fewer than 30 days are left (Let's Encrypt certificates last 90 days). If a run fails,
-GitHub e-mails you; the current certificate keeps signing until it actually expires. To renew
-immediately, run the workflow by hand with the **force** option. Nothing in the Cloudflare dashboard
-is involved: no cron trigger, no API token, no additional product.
+What happens underneath: FlareCard generates an RSA key, registers an ACME account, orders a
+certificate for the hostname, answers Let's Encrypt's `http://<host>/.well-known/acme-challenge/…`
+request from the Worker itself (Cloudflare's HTTPS redirect is followed by Let's Encrypt, nothing to
+configure), finalises the order and stores key, certificate chain and account in the Durable Object
+next to your contacts. Renewal happens without any scheduler: whenever an admin request or a profile
+download notices the certificate has less than 30 days left, a renewal runs in the background and the
+old certificate keeps signing until the new one is in place. There is no cron trigger, no DNS API
+token, no additional Cloudflare product, and nothing to rotate by hand.
 
 Notes:
 
@@ -609,15 +591,9 @@ Notes:
   secrets (PEM; leaf first, then intermediates) and FlareCard uses them in preference to the automatic
   one. You are then responsible for rotating them before expiry.
 - **Hostname changes**: the card warns when the certificate was issued for a different name than the
-  one you are currently using; the runner requests one for the current hostname on its next run
-  (start it by hand to do that now).
-- **Switching back**: the card offers *Switch back to the in-Worker client*; use it only on
-  self-hosted workerd, where the Worker can reach Let's Encrypt.
-- **Rehearsing**: run the workflow with the **staging** option (or set `ACME_DIRECTORY_URL` to the
-  Let's Encrypt staging directory) to try the flow without touching production rate limits; staging
-  certificates are not trusted by devices.
-- **Other schedulers**: the job is a plain command — `npm run acme:renew` with the same environment
-  variables — and runs from any machine with Node 22 (see the README section "Signed profiles").
+  one you are currently using; **Renew now** requests one for the current hostname.
+- **Rehearsing**: set `ACME_DIRECTORY_URL` to the Let's Encrypt staging directory to try the flow
+  without touching production rate limits (staging certificates are not trusted by devices).
 - **MDM**: if you push the CardDAV payload from an MDM, it signs the profile itself and FlareCard's
   profile becomes irrelevant.
 
@@ -895,29 +871,14 @@ original `migrations` block; never edit past migrations.
 **`wrangler deploy` fails with "Assets directory ./ui/dist not found".**
 Run `npm run build:ui` (or use `npm run deploy`, which does it for you).
 
-**Profile signing shows "Failed: ACME directory https://acme-v02.api.letsencrypt.org/directory returned 525".**
-Expected on Cloudflare Workers: the Worker cannot open a TLS connection to Let's Encrypt, whose API
-is itself behind Cloudflare (orange-to-orange, HTTP 525). It is not a configuration problem and no
-dashboard setting fixes it. Use the external ACME runner described in section 13; once it has
-uploaded a certificate the in-Worker client switches itself off and the error disappears.
-
-**The "Renew profile-signing certificate" workflow fails.**
-Read the job log; the runner prints each step. `FlareCard GET /api/signing failed (401)` — wrong
-`FLARECARD_ADMIN_USER`/`FLARECARD_ADMIN_PASSWORD` or the account is not an admin. `(429)` — the
-runner tripped FlareCard's auth rate limiter after wrong passwords; fix the secret and wait ten
-minutes. `Self-check failed: … returned HTTP 4xx/5xx` — `FLARECARD_URL` does not reach FlareCard, or a
-Cloudflare Access/WAF rule blocks `/.well-known/acme-challenge/`. `Validation failed …` — see the
-next entry. Nothing is lost on failure: the previous certificate keeps signing and the next nightly run
-tries again.
-
-**Profile signing shows "Failed" / "Validation failed: … must be able to reach …" (runner log or card).**
+**Profile signing shows "Failed" / "Validation failed: … Let's Encrypt must be able to reach …".**
 Let's Encrypt could not fetch `http://<host>/.well-known/acme-challenge/<token>`. Check from outside
 your network that `curl -i http://<host>/.well-known/acme-challenge/test` reaches the Worker (a
 FlareCard `404 Not Found` is the correct answer for an unknown token). Typical causes: `PUBLIC_HOST`
 set to a name that does not point at the Worker; the custom domain not yet active; a Cloudflare Access
 policy or WAF rule covering `/.well-known/*` (exempt that path); on self-hosted setups a reverse proxy
-that answers ACME challenges itself for that path. Re-run the workflow after fixing the cause (on
-workerd with the in-Worker client: FlareCard retries with a growing backoff, or press **Renew now**).
+that answers ACME challenges itself for that path. FlareCard retries with a growing backoff and the
+card shows the CA's exact error; press **Renew now** after fixing the cause.
 
 **Profile signing shows "Failed: … rateLimited …".**
 Let's Encrypt limits certificates per hostname (currently 50 per week) and failed validations

@@ -11,7 +11,6 @@ import {
   ShieldAlertIcon,
   ShieldOffIcon,
   SmartphoneIcon,
-  WorkflowIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -535,12 +534,9 @@ function ProfileSigningSettings() {
   const [email, setEmail] = useState<string | null>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ["signing"] });
   const toggle = useMutation({
-    mutationFn: (input: { enabled: boolean; managedBy?: "worker" | "runner" }) =>
-      api.updateSigning({ ...input, email: (email ?? signing.data?.email ?? "") || undefined }),
-    onSuccess: (res, input) => {
-      if (input.managedBy === "worker") toast.success("Switched to the in-Worker Let's Encrypt client");
-      else if (res.enabled && res.managedBy === "runner") toast.success("Signing enabled; the external ACME runner provides the certificate");
-      else if (res.enabled) toast.success(res.phase === "issued" ? "Profiles are now signed" : "Requesting a certificate from Let's Encrypt…");
+    mutationFn: (enabled: boolean) => api.updateSigning({ enabled, email: (email ?? signing.data?.email ?? "") || undefined }),
+    onSuccess: (res) => {
+      if (res.enabled) toast.success(res.phase === "issued" ? "Profiles are now signed" : "Requesting a certificate from Let's Encrypt…");
       else toast.success("Profiles are downloaded unsigned again");
       qc.setQueryData(["signing"], res);
     },
@@ -561,8 +557,6 @@ function ProfileSigningSettings() {
   const emailValue = email ?? s.email ?? "";
   const busy = toggle.isPending || renew.isPending;
   const hostMismatch = s.enabled && s.domain && s.currentHost && s.domain !== s.currentHost;
-  const runnerMode = s.source !== "external" && s.managedBy === "runner";
-  const cloudflareBlocked = !!s.error && /\b525\b/.test(s.error);
 
   return (
     <Card>
@@ -594,24 +588,10 @@ function ProfileSigningSettings() {
             </dl>
           )}
           {s.error && <p className="text-destructive mt-3 text-xs break-words">{s.error}</p>}
-          {cloudflareBlocked && (
-            <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
-              This is expected on Cloudflare Workers. Set up the <span className="font-medium">external ACME runner</span> (GitHub
-              Actions workflow <code>renew-signing-cert.yml</code>, see the README section “Signed profiles”); it obtains the
-              certificate from outside Cloudflare and uploads it here. This client switches itself off once the runner has installed
-              a certificate.
-            </p>
-          )}
-          {runnerMode && s.runnerInstalledAt && (
-            <p className="text-muted-foreground mt-3 text-xs">
-              Last upload by the runner: {formatDateTime(s.runnerInstalledAt)}. The private key never left this server.
-            </p>
-          )}
           {hostMismatch && (
             <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
               The certificate was requested for <span className="font-medium">{s.domain}</span> but FlareCard is now reached as{" "}
-              <span className="font-medium">{s.currentHost}</span>.{" "}
-              {runnerMode ? "The runner requests one for the current hostname on its next run." : "Use “Renew now” to request one for the current hostname."}
+              <span className="font-medium">{s.currentHost}</span>. Use “Renew now” to request one for the current hostname.
             </p>
           )}
         </div>
@@ -639,26 +619,13 @@ function ProfileSigningSettings() {
               <Label htmlFor="signing-enabled" className="text-sm font-medium">
                 Sign profiles automatically
               </Label>
-              <Switch id="signing-enabled" checked={s.enabled} disabled={busy} onCheckedChange={(v) => toggle.mutate({ enabled: v })} aria-label="Sign profiles automatically" />
+              <Switch id="signing-enabled" checked={s.enabled} disabled={busy} onCheckedChange={(v) => toggle.mutate(v)} aria-label="Sign profiles automatically" />
             </div>
-            {s.enabled && !runnerMode && (
+            {s.enabled && (
               <div className="sm:col-span-2">
                 <Button type="button" variant="outline" size="sm" disabled={busy || s.inProgress} onClick={() => renew.mutate()}>
                   {renew.isPending ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
                   Renew now
-                </Button>
-              </div>
-            )}
-            {runnerMode && (
-              <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
-                <Badge variant="secondary">
-                  <WorkflowIcon /> External ACME runner
-                </Badge>
-                <p className="text-muted-foreground text-xs">
-                  Renewals happen in the scheduled workflow; run it manually there to renew now.
-                </p>
-                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => toggle.mutate({ enabled: true, managedBy: "worker" })}>
-                  Switch back to the in-Worker client
                 </Button>
               </div>
             )}

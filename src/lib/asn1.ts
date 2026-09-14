@@ -287,8 +287,6 @@ export interface CertificateInfo {
   dnsNames: string[];
   /** SubjectPublicKeyInfo algorithm OID. */
   publicKeyAlgorithm: string;
-  /** DER of the complete SubjectPublicKeyInfo, for matching a certificate to a key. */
-  spkiDer: Uint8Array;
 }
 
 function nameCommonName(name: DerNode): string | null {
@@ -333,7 +331,6 @@ export function parseCertificate(der: Uint8Array): CertificateInfo {
     commonName: nameCommonName(subject),
     dnsNames,
     publicKeyAlgorithm: decodeOid(spki.children[0].children[0]),
-    spkiDer: spki.raw,
   };
 }
 

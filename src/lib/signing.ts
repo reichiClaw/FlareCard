@@ -11,15 +11,6 @@
  *     lazy: any admin request or profile download close to expiry kicks off a
  *     renewal in the background while the still-valid certificate keeps signing.
  *
- *     The managed certificate can alternatively be obtained by an *external ACME
- *     runner* (scripts/acme-runner.ts, e.g. from GitHub Actions): Cloudflare
- *     Workers cannot reach Let's Encrypt's API (it is itself behind Cloudflare and
- *     such "orange-to-orange" requests fail with 525). The runner fetches a CSR
- *     for the key kept in the Durable Object, talks to the CA, registers the
- *     http-01 answer here and uploads the issued chain. The private key never
- *     leaves FlareCard, and the in-Worker client stays off while the runner
- *     manages the certificate.
- *
  * All state lives in the settings table, so this works identically on
  * Cloudflare and workerd and needs no cron triggers or alarms.
  */
@@ -66,22 +57,7 @@ const KEYS = {
   key: "signing_key_jwk",
   chain: "signing_cert_chain",
   state: "signing_state",
-  /** "worker" (in-Worker ACME client) or "runner" (external ACME runner uploads the chain). */
-  managedBy: "signing_managed_by",
-  runnerChallenges: "signing_runner_challenges",
-  runnerInstalledAt: "signing_runner_installed_at",
 } as const;
-
-export type ManagedBy = "worker" | "runner";
-
-interface RunnerChallenge {
-  keyAuth: string;
-  expires: number;
-}
-
-/** How long a challenge answer registered by the runner stays valid. */
-const RUNNER_CHALLENGE_TTL = 3_600_000;
-const ACME_TOKEN = /^[A-Za-z0-9_-]{8,256}$/;
 
 type Phase = "idle" | "ordering" | "challenging" | "finalizing" | "issued" | "error";
 
@@ -120,10 +96,6 @@ export interface SigningStatus {
   source: "external" | "managed" | "none";
   /** Whether the admin switched automatic (ACME) signing on. */
   enabled: boolean;
-  /** Who obtains and renews the managed certificate. */
-  managedBy: ManagedBy;
-  /** When the external runner last uploaded a certificate. */
-  runnerInstalledAt: string | null;
   email: string | null;
   domain: string | null;
   /** Host FlareCard would use for a new order right now. */
@@ -258,10 +230,6 @@ export class ProfileSigner {
     return (await this.storage.getSetting(KEYS.enabled)) === "1";
   }
 
-  async managedBy(): Promise<ManagedBy> {
-    return (await this.storage.getSetting(KEYS.managedBy)) === "runner" ? "runner" : "worker";
-  }
-
   private async state(): Promise<AcmeState | null> {
     const raw = await this.storage.getSetting(KEYS.state);
     return raw ? (JSON.parse(raw) as AcmeState) : null;
@@ -288,25 +256,17 @@ export class ProfileSigner {
     const email = await this.storage.getSetting(KEYS.email);
     const domain = await this.storage.getSetting(KEYS.domain);
     const state = await this.state();
-    const managedBy = await this.managedBy();
-    const installedAt = await this.storage.getSetting(KEYS.runnerInstalledAt);
     const external = await this.externalSigner().catch(() => null);
     const managed = external ? null : await this.managedSigner().catch(() => null);
     const active = external ?? managed;
     const phase: Phase = state?.phase ?? (managed ? "issued" : "idle");
-    const inProgress = enabled && managedBy === "worker" && (phase === "ordering" || phase === "challenging" || phase === "finalizing");
+    const inProgress = enabled && (phase === "ordering" || phase === "challenging" || phase === "finalizing");
     const renewalDue = enabled && !!managed && this.renewalDue(managed.info);
 
     let message: string;
     if (external) message = `Signing with the operator-provided certificate for ${external.info.commonName ?? external.info.dnsNames[0] ?? "unknown host"}.`;
     else if (!enabled) message = "Profiles are downloaded unsigned. iOS shows them as “Not Signed”.";
-    else if (managedBy === "runner") {
-      if (managed) {
-        message = `Signing with a certificate for ${managed.info.commonName ?? domain} uploaded by the external ACME runner${renewalDue ? "; renewal is due — the runner renews it on its next scheduled run" : "; the runner renews it"}.`;
-      } else {
-        message = "The external ACME runner manages the certificate, but it has not uploaded a valid one yet. Profiles are unsigned until it does.";
-      }
-    } else if (inProgress) message = phaseMessage(phase, state?.domain ?? domain ?? "");
+    else if (inProgress) message = phaseMessage(phase, state?.domain ?? domain ?? "");
     else if (phase === "error") message = `Last attempt failed: ${state?.error ?? "unknown error"}. FlareCard retries automatically; profiles are unsigned until it succeeds.`;
     else if (managed) message = `Signing with a Let's Encrypt certificate for ${managed.info.commonName ?? domain}; renews automatically.`;
     else message = "Enabled, waiting to request a certificate.";
@@ -314,8 +274,6 @@ export class ProfileSigner {
     return {
       source: external ? "external" : managed ? "managed" : "none",
       enabled,
-      managedBy,
-      runnerInstalledAt: installedAt ? new Date(Number(installedAt)).toISOString() : null,
       email,
       domain,
       currentHost,
@@ -329,21 +287,15 @@ export class ProfileSigner {
     };
   }
 
-  /**
-   * Switches automatic signing on for `domain`. With the in-Worker client this
-   * starts the first order (unless a stored certificate still fits); in runner
-   * mode it only enables signing with whatever the runner uploads.
-   */
-  async enable(domain: string, email: string | null, managedBy?: ManagedBy): Promise<void> {
+  /** Switches automatic signing on for `domain` and starts the first order. */
+  async enable(domain: string, email: string | null): Promise<void> {
     const host = normalizeHost(domain);
     await this.storage.setSetting(KEYS.enabled, "1");
     await this.storage.setSetting(KEYS.domain, host);
     if (email !== null) await this.storage.setSetting(KEYS.email, email);
-    if (managedBy) await this.storage.setSetting(KEYS.managedBy, managedBy);
     const managed = await this.storedManagedSigner().catch(() => null);
-    const fits = !!managed && managed.info.dnsNames.includes(host) && !this.renewalDue(managed.info);
-    if (fits || (await this.managedBy()) === "runner") {
-      await this.saveState({ phase: managed ? "issued" : "idle", domain: host, startedAt: this.now(), updatedAt: this.now(), failures: 0 });
+    if (managed && managed.info.dnsNames.includes(host) && !this.renewalDue(managed.info)) {
+      await this.saveState({ phase: "issued", domain: host, startedAt: this.now(), updatedAt: this.now(), failures: 0 });
       return;
     }
     await this.startOrder(host);
@@ -351,7 +303,6 @@ export class ProfileSigner {
 
   async disable(): Promise<void> {
     await this.storage.setSetting(KEYS.enabled, "0");
-    await this.storage.setSetting(KEYS.runnerChallenges, "{}");
     const state = await this.state();
     if (state && state.phase !== "issued") await this.saveState({ ...state, phase: "idle", error: undefined });
   }
@@ -359,9 +310,6 @@ export class ProfileSigner {
   /** Forces a fresh order (renew now / host changed). */
   async renewNow(domain: string): Promise<void> {
     if (!(await this.isEnabled())) throw new SigningError("Automatic signing is switched off");
-    if ((await this.managedBy()) === "runner") {
-      throw new SigningError("The certificate is managed by the external ACME runner; trigger its workflow to renew, or switch back to the in-Worker client.");
-    }
     const host = normalizeHost(domain);
     await this.storage.setSetting(KEYS.domain, host);
     await this.startOrder(host);
@@ -374,78 +322,8 @@ export class ProfileSigner {
   /** Answers /.well-known/acme-challenge/<token> during a pending order. */
   async challengeResponse(token: string): Promise<string | null> {
     const state = await this.state();
-    if (state && state.phase === "challenging" && state.token === token && state.keyAuth) return state.keyAuth;
-    const runner = await this.runnerChallenges();
-    const entry = runner[token];
-    return entry && entry.expires > this.now() ? entry.keyAuth : null;
-  }
-
-  // -------------------------------------------------------------------------
-  // External ACME runner
-
-  /**
-   * A PKCS#10 CSR for `domain`, signed with the certificate key kept in storage
-   * (generated on first use, reused across renewals so the key never leaves here).
-   */
-  async certificateRequest(domain: string): Promise<{ domain: string; csr: string }> {
-    const host = normalizeHost(domain);
-    await this.storage.setSetting(KEYS.domain, host);
-    const key = await this.certificateKey();
-    const csr = await buildCsr(host, key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" });
-    return { domain: host, csr: derToPem(csr, "CERTIFICATE REQUEST") };
-  }
-
-  /** Registers an http-01 answer the runner obtained from the CA. */
-  async registerChallenge(token: string, keyAuthorization: string): Promise<void> {
-    if (!ACME_TOKEN.test(token)) throw new SigningError("Invalid ACME token");
-    if (!keyAuthorization.startsWith(`${token}.`) || keyAuthorization.length > 1024 || /\s/.test(keyAuthorization)) {
-      throw new SigningError("keyAuthorization must be <token>.<account key thumbprint>");
-    }
-    const challenges = await this.runnerChallenges();
-    challenges[token] = { keyAuth: keyAuthorization, expires: this.now() + RUNNER_CHALLENGE_TTL };
-    await this.storage.setSetting(KEYS.runnerChallenges, JSON.stringify(challenges));
-  }
-
-  /**
-   * Installs a chain the runner obtained for the CSR above. The leaf must be
-   * issued for our stored key and cover the configured hostname. Switches the
-   * certificate to runner management and enables signing.
-   */
-  async installCertificate(pem: string): Promise<void> {
-    const blocks = pemBlocks(pem).filter((b) => b.label === "CERTIFICATE");
-    if (!blocks.length) throw new SigningError("No CERTIFICATE block found in the uploaded PEM");
-    let info: CertificateInfo;
-    try {
-      info = parseCertificate(blocks[0].der);
-    } catch (e) {
-      throw new SigningError(`Cannot parse certificate: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    const stored = await this.storage.getSetting(KEYS.key);
-    if (!stored) throw new SigningError("No certificate key exists yet; request a CSR first");
-    const key = await this.certificateKey();
-    const spki = new Uint8Array((await crypto.subtle.exportKey("spki", key.publicKey)) as ArrayBuffer);
-    if (!bytesEqual(spki, info.spkiDer)) throw new SigningError("The certificate was not issued for FlareCard's key; request a fresh CSR and try again");
-    if (info.notAfter.getTime() <= this.now()) throw new SigningError("The certificate has already expired");
-    const domain = await this.storage.getSetting(KEYS.domain);
-    if (domain && !info.dnsNames.includes(domain)) {
-      throw new SigningError(`The certificate covers ${info.dnsNames.join(", ") || "no hostnames"} but FlareCard expects ${domain}`);
-    }
-    await this.storage.setSetting(KEYS.chain, blocks.map((b) => derToPem(b.der, "CERTIFICATE")).join(""));
-    await this.storage.setSetting(KEYS.managedBy, "runner");
-    await this.storage.setSetting(KEYS.enabled, "1");
-    await this.storage.setSetting(KEYS.runnerInstalledAt, String(this.now()));
-    await this.storage.setSetting(KEYS.runnerChallenges, "{}");
-    if (!domain) await this.storage.setSetting(KEYS.domain, info.dnsNames[0] ?? "");
-    await this.saveState({ phase: "issued", domain: domain || info.dnsNames[0] || "", startedAt: this.now(), updatedAt: this.now(), failures: 0 });
-    this.cache = null;
-  }
-
-  private async runnerChallenges(): Promise<Record<string, RunnerChallenge>> {
-    const raw = await this.storage.getSetting(KEYS.runnerChallenges);
-    if (!raw) return {};
-    const all = JSON.parse(raw) as Record<string, RunnerChallenge>;
-    const now = this.now();
-    return Object.fromEntries(Object.entries(all).filter(([, v]) => v.expires > now));
+    if (!state || state.phase !== "challenging" || state.token !== token || !state.keyAuth) return null;
+    return state.keyAuth;
   }
 
   // -------------------------------------------------------------------------
@@ -460,7 +338,6 @@ export class ProfileSigner {
   /** True when a call to advance() would do something right now. */
   async hasWork(): Promise<boolean> {
     if (!(await this.isEnabled())) return false;
-    if ((await this.managedBy()) === "runner") return false;
     if (await this.externalMaterial()) return false;
     const state = await this.state();
     if (!state) return true;
@@ -527,7 +404,7 @@ export class ProfileSigner {
         if (state.phase === "issued") break;
       }
     } catch (e) {
-      await this.fail(state, explainAcmeError(e));
+      await this.fail(state, e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -669,28 +546,6 @@ function phaseMessage(phase: Phase, domain: string): string {
     default:
       return "";
   }
-}
-
-/**
- * Turns an ACME failure into an operator-facing message. HTTP 525 on the CA's
- * own endpoints is the Cloudflare Workers "orange-to-orange" limitation: the
- * Worker cannot complete a TLS handshake with another Cloudflare-fronted site,
- * and Let's Encrypt's API is one.
- */
-export function explainAcmeError(e: unknown): string {
-  const message = e instanceof Error ? e.message : String(e);
-  const status = e instanceof AcmeError ? e.httpStatus : 0;
-  if (status === 525 || /\b525\b/.test(message)) {
-    return `${message}. Cloudflare Workers cannot reach Let's Encrypt directly (its API is also behind Cloudflare, and Worker-to-Cloudflare TLS fails with 525). Use the external ACME runner (npm run acme:renew, e.g. from GitHub Actions) or provide a certificate via PROFILE_SIGNING_KEY/PROFILE_SIGNING_CERT`;
-  }
-  return message;
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
 }
 
 /** Strips scheme, path and port; http-01 requires the standard ports anyway. */

@@ -16,7 +16,7 @@ import {
   loadLockMarkerSetting,
 } from "./dav/context";
 import { LOCK_MARK } from "./lib/lockmark";
-import { SigningError, type ManagedBy } from "./lib/signing";
+import { SigningError } from "./lib/signing";
 import { ResyncError } from "./lib/resync";
 
 type Variables = { user: User };
@@ -426,23 +426,18 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
   });
 
   api.put("/signing", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown; email?: unknown; managedBy?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { enabled?: unknown; email?: unknown };
     if (typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
-    if (body.managedBy !== undefined && body.managedBy !== "worker" && body.managedBy !== "runner") {
-      return c.json({ error: 'managedBy must be "worker" or "runner"' }, 400);
-    }
     const host = publicHost(services, c.req.raw);
     const email = typeof body.email === "string" ? body.email.trim() : null;
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return c.json({ error: "Invalid e-mail address" }, 400);
     try {
       if (body.enabled) {
-        await signer.enable(host.hostname, email, body.managedBy as ManagedBy | undefined);
-        if (await signer.hasWork()) {
-          // Give the first order a head start so the UI sees progress immediately,
-          // then let it continue in the background.
-          await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
-          services.background(signer.advance());
-        }
+        await signer.enable(host.hostname, email);
+        // Give the first order a head start so the UI sees progress immediately,
+        // then let it continue in the background.
+        await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
+        services.background(signer.advance());
       } else {
         await signer.disable();
       }
@@ -463,50 +458,6 @@ export function adminApi(services: Services): Hono<{ Variables: Variables }> {
     }
     await Promise.race([signer.advance(), new Promise((r) => setTimeout(r, 4000))]);
     services.background(signer.advance());
-    return c.json(await signer.status(host.hostname));
-  });
-
-  // External ACME runner: CSR out, challenge answer and certificate chain in.
-  // The private key stays in the Durable Object.
-
-  api.post("/signing/csr", async (c) => {
-    // Drain any body a client may send; an unread body confuses some proxies.
-    await c.req.raw.arrayBuffer().catch(() => undefined);
-    const host = publicHost(services, c.req.raw);
-    try {
-      return c.json(await signer.certificateRequest(host.hostname));
-    } catch (e) {
-      if (e instanceof SigningError) return c.json({ error: e.message }, 400);
-      throw e;
-    }
-  });
-
-  api.put("/signing/challenge", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { token?: unknown; keyAuthorization?: unknown };
-    if (typeof body.token !== "string" || typeof body.keyAuthorization !== "string") {
-      return c.json({ error: "token and keyAuthorization are required" }, 400);
-    }
-    try {
-      await signer.registerChallenge(body.token, body.keyAuthorization);
-    } catch (e) {
-      if (e instanceof SigningError) return c.json({ error: e.message }, 400);
-      throw e;
-    }
-    const host = publicHost(services, c.req.raw);
-    return c.json({ ok: true, url: `http://${host.hostname}/.well-known/acme-challenge/${body.token}` });
-  });
-
-  api.put("/signing/certificate", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { certificate?: unknown };
-    if (typeof body.certificate !== "string" || !body.certificate.trim()) return c.json({ error: "certificate (PEM chain) is required" }, 400);
-    if (body.certificate.length > 64 * 1024) return c.json({ error: "certificate is too large" }, 400);
-    try {
-      await signer.installCertificate(body.certificate);
-    } catch (e) {
-      if (e instanceof SigningError) return c.json({ error: e.message }, 400);
-      throw e;
-    }
-    const host = publicHost(services, c.req.raw);
     return c.json(await signer.status(host.hostname));
   });
 
