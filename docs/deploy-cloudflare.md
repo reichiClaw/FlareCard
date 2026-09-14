@@ -157,10 +157,7 @@ The shipped configuration works as-is. The parts you may want to touch:
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlareCardDO"] }],
 
-  "vars": {
-    "PUBLIC_HOST": "",                 // set to your custom hostname, see section 9
-    "ADMIN_BOOTSTRAP_USERNAME": "admin"
-  }
+  "keep_vars": true                    // plain variables live in the dashboard and survive deploys
 }
 ```
 
@@ -169,13 +166,19 @@ The shipped configuration works as-is. The parts you may want to touch:
 - **`migrations`**: declares that `FlareCardDO` uses SQLite storage. Never remove or rename an
   existing migration tag after deploying; that would orphan your data. New migrations, if a future
   version needs one, are appended.
-- **`vars`**: plain-text configuration. Secrets go elsewhere (next section).
+- **`keep_vars`**: tells Wrangler to leave the plain variables you set in the dashboard alone on
+  every deploy. There is deliberately **no `vars` block**: anything listed there would overwrite
+  the dashboard value on each deployment (that is how a `PUBLIC_HOST` set in the dashboard used to
+  disappear). Configure variables and secrets in the dashboard or with the CLI (next section).
 
 ---
 
 ## 6. Configure secrets and variables
 
-FlareCard needs one secret and accepts a handful of optional settings.
+FlareCard needs one secret and accepts a handful of optional settings. Both kinds are configured
+**in the Cloudflare dashboard or with the Wrangler CLI, never in `wrangler.jsonc`**: the config
+sets `keep_vars: true` and has no `vars` block, so whatever you set in the dashboard survives every
+deployment (secrets always do).
 
 | Name | Type | Required | Purpose |
 | --- | --- | --- | --- |
@@ -186,7 +189,7 @@ FlareCard needs one secret and accepts a handful of optional settings.
 | `AUTH_RATE_LIMIT_IP` | var | no (default `60`) | Failed login attempts allowed per client IP within the window before FlareCard answers `429 Too Many Requests`. |
 | `AUTH_RATE_LIMIT_USER` | var | no (default `15`) | Failed attempts allowed per username within the window, regardless of IP. Protects an individual account against distributed guessing. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | var | no (default `600`) | Length of the rate-limit window. Counters reset on a successful login and expire after the window. |
-| `ACME_DIRECTORY_URL` | var | no | ACME directory for automatic profile signing (section 13). The repository sets ZeroSSL (`https://acme.zerossl.com/v2/DV90`), the CA that works from a Cloudflare Worker. Empty = Let's Encrypt production, which does **not** work from Workers (error 525, see section 13). |
+| `ACME_DIRECTORY_URL` | var | no | ACME directory for automatic profile signing (section 13). Default (unset) = ZeroSSL (`https://acme.zerossl.com/v2/DV90`), the CA that works from a Cloudflare Worker. Let's Encrypt does **not** work from Workers (error 525, see section 13); only set this for Google Trust Services or on self-hosted workerd. |
 | `ACME_EAB_KID` | secret | for ZeroSSL / Google Trust Services | External Account Binding key id from the CA's dashboard (section 13). |
 | `ACME_EAB_HMAC_KEY` | secret | for ZeroSSL / Google Trust Services | External Account Binding HMAC key (base64url string) from the same place. Both EAB values must be set together. |
 | `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | secret | no | Bring-your-own PEM key and certificate chain for signing profiles instead of the automatic ACME certificate. Most deployments leave these unset. |
@@ -220,16 +223,19 @@ after** both the code and the secret are present.
 openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
 ```
 
-### Optional: public host
+### Optional: public host and other plain variables
 
-Edit `wrangler.jsonc`:
+Plain variables are set in the dashboard: **Workers & Pages → flarecard → Settings → Variables and
+Secrets → Add**, type **Text**, name `PUBLIC_HOST`, value `contacts.example.com` → **Deploy**
+(the dashboard applies variable changes as a new version). The same works for
+`ADMIN_BOOTSTRAP_USERNAME`, the `AUTH_RATE_LIMIT_*` values and `ACME_DIRECTORY_URL`.
 
-```jsonc
-"vars": { "PUBLIC_HOST": "contacts.example.com", "ADMIN_BOOTSTRAP_USERNAME": "admin" }
-```
+There is no CLI command for individual plain variables, but you may store a non-sensitive value as
+a secret instead (`npx wrangler secret put PUBLIC_HOST`); FlareCard reads `env.PUBLIC_HOST` either
+way. A name can only exist as *either* a variable or a secret, not both.
 
-You can also set vars in the dashboard (**Worker → Settings → Variables and Secrets**), but values
-in `wrangler.jsonc` win on the next deploy, so keep them in the file.
+Do **not** add a `vars` block to `wrangler.jsonc` for these: it would overwrite the dashboard
+values on every deploy. `keep_vars: true` in the shipped config is what keeps them intact.
 
 Store the bootstrap password in your password manager. After the first login you can (and should)
 delete the secret; see section 18.
@@ -340,19 +346,23 @@ overwrites secrets. They are also never displayed again, only replaceable.
 
 ### 8.4 Set plain variables (hostname, rate limits)
 
-`PUBLIC_HOST`, `ADMIN_BOOTSTRAP_USERNAME` and the `AUTH_RATE_LIMIT_*` variables are defined in the
-`vars` block of `wrangler.jsonc`. On every Git deployment that file **replaces** whatever plain
-variables are set in the dashboard, so edit them in the repository, not in the dashboard:
+`PUBLIC_HOST`, `ADMIN_BOOTSTRAP_USERNAME`, the `AUTH_RATE_LIMIT_*` values and `ACME_DIRECTORY_URL`
+are set in the dashboard exactly like the secrets, just with type **Text** instead of **Secret**:
 
-1. On GitHub, open your fork → `wrangler.jsonc` → pencil icon (**Edit this file**).
-2. Change, for example, `"PUBLIC_HOST": ""` to `"PUBLIC_HOST": "contacts.example.com"` and, if you
-   want stricter limits, `"AUTH_RATE_LIMIT_USER": "10"`.
-3. **Commit changes** to `main`. Cloudflare picks up the push and redeploys automatically; watch it
-   under **Deployments**.
+1. **Workers & Pages → flarecard → Settings → Variables and Secrets → Add**.
+2. Type **Text**, name `PUBLIC_HOST`, value `contacts.example.com`. Add more variables the same
+   way if you want, e.g. `AUTH_RATE_LIMIT_USER` = `10`.
+3. **Deploy**. The dashboard creates a new version with the variables; they are live within
+   seconds.
 
-(If you would rather manage variables in the dashboard, add `"keep_vars": true` to `wrangler.jsonc`
-once and remove the `vars` block; then dashboard values survive deployments. Secrets are unaffected
-either way.)
+These values **survive Git deployments**: `wrangler.jsonc` sets `keep_vars: true` and contains no
+`vars` block, so Wrangler never touches the dashboard's variables. All variables are optional and
+have sensible defaults (see the table in section 6), so a fresh deployment works without any of
+them.
+
+If you ever add a `vars` block to your fork's `wrangler.jsonc`, be aware that every name listed there
+is re-applied on each deploy and overwrites the dashboard value of the same name, even with
+`keep_vars` set.
 
 ### 8.5 First login
 
@@ -410,8 +420,9 @@ Then `npm run deploy`.
 
 ### Afterwards
 
-- Set `"PUBLIC_HOST": "contacts.example.com"` in `wrangler.jsonc` and redeploy so downloaded
-  profiles point at the custom domain.
+- Set the `PUBLIC_HOST` variable to `contacts.example.com` in the dashboard (**Settings →
+  Variables and Secrets**, type Text, then **Deploy**; see section 8.4) so downloaded profiles
+  point at the custom domain.
 - Optionally disable the `workers.dev` URL (`"workers_dev": false`, redeploy) so there is exactly
   one hostname in circulation. Keep it enabled while testing.
 
@@ -606,10 +617,10 @@ an empty value; there the 525 problem does not exist.
 
    or in the dashboard: **Workers & Pages → flarecard → Settings → Variables and Secrets → Add**,
    type **Secret**, one entry per name. Secrets are live within seconds, no redeploy needed.
-4. **Check the directory variable**: `wrangler.jsonc` ships with
-   `"ACME_DIRECTORY_URL": "https://acme.zerossl.com/v2/DV90"`. If you changed the `vars` block
-   earlier, make sure this line is still there (it is plain text, not a secret; with Git deployments
-   edit it in the repository, see section 8.4).
+4. **Check the directory variable**: ZeroSSL (`https://acme.zerossl.com/v2/DV90`) is FlareCard's
+   default, so `ACME_DIRECTORY_URL` can stay unset. If you set it earlier (for example to Let's
+   Encrypt), delete that variable in **Settings → Variables and Secrets** or change it to the
+   ZeroSSL URL, then **Deploy**.
 5. **Make sure the Worker is reachable under its public hostname** (`workers.dev` or the custom
    domain from section 9) and that `PUBLIC_HOST` matches it, or simply open the admin UI under that
    hostname. ZeroSSL validates ownership by fetching
@@ -860,7 +871,7 @@ Wrangler environments let one config produce several Workers. Add to `wrangler.j
 "env": {
   "staging": {
     "name": "flarecard-staging",
-    "vars": { "PUBLIC_HOST": "contacts-staging.example.com", "ADMIN_BOOTSTRAP_USERNAME": "admin" },
+    "vars": { "PUBLIC_HOST": "contacts-staging.example.com" },  // or set it in the staging Worker's dashboard
     "routes": [{ "pattern": "contacts-staging.example.com", "custom_domain": true }]
   }
 }
@@ -925,6 +936,14 @@ after one full sync.
 **`wrangler deploy` fails with "Cannot apply new-sqlite-classes migration"** or similar.
 The migration tag `v1` already exists in a different form (e.g. you edited it). Restore the
 original `migrations` block; never edit past migrations.
+
+**A variable I set in the dashboard (e.g. `PUBLIC_HOST`) was gone after the next deploy.**
+Your fork's `wrangler.jsonc` contains a `vars` block, or `keep_vars` was removed. Wrangler treats
+every name in `vars` as the source of truth and overwrites the dashboard value of that name on each
+deploy; without `keep_vars: true` it even deletes dashboard variables it does not know. The shipped
+config has `"keep_vars": true` and no `vars` block, so dashboard variables persist. Sync your fork
+with upstream (section 8.6) or remove the block yourself, then re-enter the variable once. Secrets
+are never affected.
 
 **`wrangler deploy` fails with "Assets directory ./ui/dist not found".**
 Run `npm run build:ui` (or use `npm run deploy`, which does it for you).

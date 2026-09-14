@@ -23,23 +23,18 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlareCardDO"] }],
 
-  "vars": {
-    // Public-facing hostname used in generated .mobileconfig profiles and setup pages.
-    // Leave empty to derive it from the incoming Host header.
-    "PUBLIC_HOST": "",
-    // Username of the first admin created from ADMIN_BOOTSTRAP_PASSWORD.
-    "ADMIN_BOOTSTRAP_USERNAME": "admin",
-    // Built-in auth rate limiting: failed attempts allowed per client IP / per username
-    // within the window before 429s are returned. Successful logins reset the counters.
-    "AUTH_RATE_LIMIT_IP": "60",
-    "AUTH_RATE_LIMIT_USER": "15",
-    "AUTH_RATE_LIMIT_WINDOW_SECONDS": "600",
-    // ACME directory used for automatic profile-signing certificates. Empty = Let's Encrypt
-    // production. On Cloudflare Workers use ZeroSSL instead: Let's Encrypt's API is behind
-    // Cloudflare as well and Worker requests to it fail with error 525. ZeroSSL requires the
-    // ACME_EAB_KID / ACME_EAB_HMAC_KEY secrets (see README "Profile signing").
-    "ACME_DIRECTORY_URL": "https://acme.zerossl.com/v2/DV90"
-  }
+  // Plain variables are managed in the Cloudflare dashboard (Worker -> Settings -> Variables
+  // and Secrets, type "Text"), not here. keep_vars makes deploys leave them alone; a `vars`
+  // block would overwrite dashboard values on every deploy. All of them are optional:
+  //   PUBLIC_HOST                     - public hostname for .mobileconfig profiles / setup page
+  //                                     (default: the request's Host header)
+  //   ADMIN_BOOTSTRAP_USERNAME        - first admin's username (default "admin")
+  //   AUTH_RATE_LIMIT_IP              - failed logins per client IP per window (default 60, 0 = off)
+  //   AUTH_RATE_LIMIT_USER            - failed logins per username per window (default 15, 0 = off)
+  //   AUTH_RATE_LIMIT_WINDOW_SECONDS  - rate-limit window (default 600)
+  //   ACME_DIRECTORY_URL              - CA for automatic profile signing (default ZeroSSL, which is
+  //                                     the CA reachable from Workers; Let's Encrypt fails with 525)
+  "keep_vars": true,
 
   // Secrets (set with `wrangler secret put <NAME>` or in .dev.vars for local dev):
   //   ADMIN_BOOTSTRAP_PASSWORD  - creates the initial admin if no users exist

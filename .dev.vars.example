@@ -8,8 +8,8 @@ ADMIN_BOOTSTRAP_PASSWORD=change-me-please
 # a quoted multi-line value). Leave unset to use the automatic ACME certificate.
 # PROFILE_SIGNING_KEY=
 # PROFILE_SIGNING_CERT=
-# Optional: ACME directory for automatic signing certificates. wrangler.jsonc sets ZeroSSL;
-# override here, e.g. with the Let's Encrypt staging directory for local tests.
+# Optional: ACME directory for automatic signing certificates (default: ZeroSSL). Override here,
+# e.g. with the Let's Encrypt staging directory for local tests on workerd.
 # ACME_DIRECTORY_URL=https://acme-staging-v02.api.letsencrypt.org/directory
 # Required for ZeroSSL / Google Trust Services: External Account Binding credentials.
 # ZeroSSL: dashboard -> Developer -> "EAB Credentials for ACME Clients" -> Generate.

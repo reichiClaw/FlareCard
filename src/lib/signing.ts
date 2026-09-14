@@ -29,7 +29,7 @@ import { signCms, type CmsSigner } from "./cms";
 import {
   AcmeClient,
   AcmeError,
-  LETS_ENCRYPT_DIRECTORY,
+  ZEROSSL_DIRECTORY,
   buildCsr,
   describeProblem,
   generateAccountKeys,
@@ -42,7 +42,10 @@ import {
 } from "./acme";
 
 export interface SigningEnv {
-  /** ACME directory; defaults to Let's Encrypt production. */
+  /**
+   * ACME directory; defaults to ZeroSSL, which is reachable from Cloudflare Workers
+   * (Let's Encrypt's API is behind Cloudflare and answers Workers with 525).
+   */
   ACME_DIRECTORY_URL?: string;
   /**
    * External Account Binding credentials (RFC 8555 §7.3.4). Required by ZeroSSL and
@@ -149,7 +152,7 @@ export class ProfileSigner {
   ) {}
 
   get directoryUrl(): string {
-    return this.env.ACME_DIRECTORY_URL?.trim() || LETS_ENCRYPT_DIRECTORY;
+    return this.env.ACME_DIRECTORY_URL?.trim() || ZEROSSL_DIRECTORY;
   }
 
   get provider(): string {

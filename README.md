@@ -154,7 +154,7 @@ Environment / secrets:
 | `AUTH_RATE_LIMIT_IP` | Var, optional (default `60`). Failed auth attempts allowed per client IP per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_USER` | Var, optional (default `15`). Failed auth attempts allowed per username per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Var, optional (default `600`). Rate-limit window; a successful login resets the counters. |
-| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates. `wrangler.jsonc` sets ZeroSSL (works from Workers); empty = Let's Encrypt production (workerd only, see [Signed profiles](#signed-profiles)). |
+| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates. Default: ZeroSSL (works from Workers and workerd). Set to `https://acme-v02.api.letsencrypt.org/directory` on workerd for Let's Encrypt without EAB (see [Signed profiles](#signed-profiles)). |
 | `ACME_EAB_KID` / `ACME_EAB_HMAC_KEY` | Secrets, required for ZeroSSL and Google Trust Services. External Account Binding credentials from the CA's dashboard; must be set together. |
 | `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | Secrets, optional. Your own PEM key and certificate chain for signing profiles; takes precedence over the automatic certificate. |
 | `SIGNING_CERTS` | Binding, optional (workerd). `disk` service with `privkey.pem`+`fullchain.pem` or `<host>.key`+`<host>.crt`, e.g. your Caddy/certbot directory. |
@@ -174,7 +174,9 @@ npm run deploy                        # builds the UI and runs wrangler deploy
 
 The `migrations` block in `wrangler.jsonc` declares `FlareCardDO` as a SQLite-backed class.
 Attach a custom domain (Workers → Settings → Domains) so devices talk to something like
-`contacts.example.com`.
+`contacts.example.com`, then set `PUBLIC_HOST` to that name under Workers → Settings → Variables
+and Secrets (type Text). `wrangler.jsonc` has `keep_vars: true` and no `vars` block, so variables
+you set in the dashboard survive every deploy; all of them are optional.
 
 **No terminal?** Fork this repository and deploy it entirely from the Cloudflare dashboard
 (Workers & Pages → Create → Import a repository, build command `npm run build:ui`, deploy command
@@ -422,7 +424,7 @@ Three ways to get a certificate, in order of precedence:
    background while the still-valid certificate keeps signing. No cron triggers, alarms, DNS API
    tokens or extra Cloudflare products are involved; the whole flow works the same on workerd.
 
-**Which CA?** On **Cloudflare Workers use ZeroSSL** (the default in `wrangler.jsonc`). Let's Encrypt's
+**Which CA?** On **Cloudflare Workers use ZeroSSL** (the default). Let's Encrypt's
 API is hosted behind Cloudflare itself, and a Worker calling another Cloudflare-fronted origin gets an
 HTTP 525 from the edge, so Let's Encrypt is unreachable from Workers regardless of challenge type.
 ZeroSSL and Google Trust Services host their ACME endpoints elsewhere and require **External Account
@@ -432,7 +434,7 @@ Binding (EAB)**, which FlareCard supports:
 | --- | --- | --- | --- |
 | ZeroSSL (free) | `https://acme.zerossl.com/v2/DV90` | required: `ACME_EAB_KID` + `ACME_EAB_HMAC_KEY` | Cloudflare Workers, workerd |
 | Google Trust Services (free) | `https://dv.acme-v02.api.pki.goog/directory` | required (Google Cloud "Public CA" external account key) | Cloudflare Workers, workerd |
-| Let's Encrypt (free) | empty / `https://acme-v02.api.letsencrypt.org/directory` | none | workerd only |
+| Let's Encrypt (free) | `https://acme-v02.api.letsencrypt.org/directory` | none | workerd only |
 
 ZeroSSL setup in short: sign up free at app.zerossl.com → **Developer → EAB Credentials for ACME
 Clients → Generate** → `wrangler secret put ACME_EAB_KID` and `wrangler secret put ACME_EAB_HMAC_KEY`

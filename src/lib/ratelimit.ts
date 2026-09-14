@@ -80,8 +80,9 @@ export interface AuthRateLimitEnv {
 }
 
 /** Parses a non-negative integer; anything unset or malformed yields the fallback. */
-function intOr(value: string | undefined, fallback: number, min = 0): number {
-  if (value === undefined || value.trim() === "") return fallback;
+function intOr(value: string | null | undefined, fallback: number, min = 0): number {
+  // workerd's `fromEnvironment` bindings yield null (not undefined) for unset variables.
+  if (value == null || value.trim() === "") return fallback;
   const n = Number(value);
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
