@@ -114,6 +114,8 @@ export interface SigningStatus {
   inProgress: boolean;
   renewalDue: boolean;
   acmeDirectory: string;
+  acmeProvider: string;
+  eabConfigured: boolean;
 }
 
 export type ResyncMode = "off" | "interval" | "daily" | "weekly";

@@ -5,6 +5,10 @@
  *   pebble-challtestsrv -dns01 127.0.0.1:8053 -http01 "" -https01 "" -tlsalpn01 "" -defaultIPv4 127.0.0.1 &
  *   PEBBLE_VA_NOSLEEP=1 pebble -config pebble.json -dnsserver 127.0.0.1:8053 &
  *   PEBBLE_DIRECTORY=https://127.0.0.1:14000/dir PEBBLE_HTTP_PORT=5002 npm test -- pebble
+ *
+ * To exercise External Account Binding (ZeroSSL / Google Trust Services style), start Pebble
+ * with test/config/pebble-config-external-account-bindings.json and additionally set
+ * PEBBLE_EAB_KID=kid-1 PEBBLE_EAB_HMAC_KEY=<the matching key from that config>.
  */
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
@@ -19,11 +23,12 @@ import { parseCertificate, parseDer } from "../src/lib/asn1";
 const directory = process.env.PEBBLE_DIRECTORY;
 const httpPort = Number(process.env.PEBBLE_HTTP_PORT ?? "5002");
 const HOST = "flarecard.test";
+const eab = process.env.PEBBLE_EAB_KID ? { ACME_EAB_KID: process.env.PEBBLE_EAB_KID, ACME_EAB_HMAC_KEY: process.env.PEBBLE_EAB_HMAC_KEY } : {};
 
 describe.skipIf(!directory)("ACME against Pebble", () => {
   it("issues a real certificate via http-01 and signs a profile that openssl verifies", { timeout: 60_000 }, async () => {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // Pebble uses a self-signed TLS certificate
-    const t = await makeApp({ env: { PUBLIC_HOST: HOST, ACME_DIRECTORY_URL: directory! } });
+    const t = await makeApp({ env: { PUBLIC_HOST: HOST, ACME_DIRECTORY_URL: directory!, ...eab } });
 
     // Pebble validates by connecting to <host>:httpPort; forward that into the app.
     const server = createServer((req, res) => {

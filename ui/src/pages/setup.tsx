@@ -536,7 +536,7 @@ function ProfileSigningSettings() {
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => api.updateSigning({ enabled, email: (email ?? signing.data?.email ?? "") || undefined }),
     onSuccess: (res) => {
-      if (res.enabled) toast.success(res.phase === "issued" ? "Profiles are now signed" : "Requesting a certificate from Let's Encrypt…");
+      if (res.enabled) toast.success(res.phase === "issued" ? "Profiles are now signed" : `Requesting a certificate from ${res.acmeProvider}…`);
       else toast.success("Profiles are downloaded unsigned again");
       qc.setQueryData(["signing"], res);
     },
@@ -567,8 +567,8 @@ function ProfileSigningSettings() {
         </div>
         <CardDescription>
           Signed <code>.mobileconfig</code> files show “Verified” instead of “Not Signed” on iPhones and Macs. FlareCard can
-          obtain and renew a free Let's Encrypt certificate for <span className="font-medium">{s.currentHost}</span> by itself;
-          nothing to install or rotate.
+          obtain and renew a free certificate from <span className="font-medium">{s.acmeProvider}</span> for{" "}
+          <span className="font-medium">{s.currentHost}</span> by itself; nothing to install or rotate.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -604,7 +604,7 @@ function ProfileSigningSettings() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
             <div className="space-y-2">
-              <Label htmlFor="acme-email">Contact e-mail for Let's Encrypt (optional)</Label>
+              <Label htmlFor="acme-email">Contact e-mail for {s.acmeProvider} (optional)</Label>
               <Input
                 id="acme-email"
                 type="email"
@@ -613,7 +613,7 @@ function ProfileSigningSettings() {
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={busy}
               />
-              <p className="text-muted-foreground text-xs">Only used for expiry warnings from Let's Encrypt. Requires the server to be reachable from the internet as {s.currentHost}.</p>
+              <p className="text-muted-foreground text-xs">Only used for expiry warnings from {s.acmeProvider}. Requires the server to be reachable from the internet as {s.currentHost}.</p>
             </div>
             <div className="flex items-center gap-3">
               <Label htmlFor="signing-enabled" className="text-sm font-medium">
@@ -632,10 +632,17 @@ function ProfileSigningSettings() {
           </div>
         )}
         <p className="text-muted-foreground text-xs">
-          Let's Encrypt verifies ownership by fetching <code>http://{s.currentHost}/.well-known/acme-challenge/…</code>, which
+          {s.acmeProvider} verifies ownership by fetching <code>http://{s.currentHost}/.well-known/acme-challenge/…</code>, which
           FlareCard answers itself. On Cloudflare nothing else is needed; behind your own reverse proxy make sure that path is
           forwarded to FlareCard.{" "}
           {s.acmeDirectory.includes("staging") && <span className="text-amber-700 dark:text-amber-300">Using the Let's Encrypt staging directory: certificates will not be trusted by devices.</span>}
+        </p>
+        <p className="text-muted-foreground text-xs">
+          Certificate authority: <code>{s.acmeDirectory}</code>
+          {s.eabConfigured ? " (External Account Binding configured)" : ""}. Change it with the <code>ACME_DIRECTORY_URL</code>{" "}
+          variable; ZeroSSL and Google Trust Services additionally need the <code>ACME_EAB_KID</code> and{" "}
+          <code>ACME_EAB_HMAC_KEY</code> secrets. On Cloudflare Workers use ZeroSSL: Let's Encrypt's API sits behind Cloudflare too
+          and answers Worker requests with error 525.
         </p>
       </CardContent>
     </Card>

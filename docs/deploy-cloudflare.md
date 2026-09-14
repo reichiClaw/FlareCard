@@ -186,8 +186,10 @@ FlareCard needs one secret and accepts a handful of optional settings.
 | `AUTH_RATE_LIMIT_IP` | var | no (default `60`) | Failed login attempts allowed per client IP within the window before FlareCard answers `429 Too Many Requests`. |
 | `AUTH_RATE_LIMIT_USER` | var | no (default `15`) | Failed attempts allowed per username within the window, regardless of IP. Protects an individual account against distributed guessing. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | var | no (default `600`) | Length of the rate-limit window. Counters reset on a successful login and expire after the window. |
-| `ACME_DIRECTORY_URL` | var | no | ACME directory for automatic profile signing (section 13). Empty = Let's Encrypt production. Set to `https://acme-staging-v02.api.letsencrypt.org/directory` to rehearse. |
-| `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | secret | no | Bring-your-own PEM key and certificate chain for signing profiles instead of the automatic Let's Encrypt certificate. Most deployments leave these unset. |
+| `ACME_DIRECTORY_URL` | var | no | ACME directory for automatic profile signing (section 13). The repository sets ZeroSSL (`https://acme.zerossl.com/v2/DV90`), the CA that works from a Cloudflare Worker. Empty = Let's Encrypt production, which does **not** work from Workers (error 525, see section 13). |
+| `ACME_EAB_KID` | secret | for ZeroSSL / Google Trust Services | External Account Binding key id from the CA's dashboard (section 13). |
+| `ACME_EAB_HMAC_KEY` | secret | for ZeroSSL / Google Trust Services | External Account Binding HMAC key (base64url string) from the same place. Both EAB values must be set together. |
+| `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | secret | no | Bring-your-own PEM key and certificate chain for signing profiles instead of the automatic ACME certificate. Most deployments leave these unset. |
 
 The three `AUTH_RATE_LIMIT_*` variables control FlareCard's **built-in** brute-force protection. It
 covers Basic auth on `/dav/*` and `/api/*` as well as the admin login form, counts only *failed*
@@ -330,6 +332,8 @@ bootstrap password exists. Add it now:
    (a password manager's generator is fine; store it there too). **Save** — no redeploy is
    necessary for secrets, they are live within seconds.
 3. Optional: add `SESSION_SECRET` the same way (type Secret, 32+ random characters).
+4. If you want signed `.mobileconfig` profiles (section 13), add `ACME_EAB_KID` and
+   `ACME_EAB_HMAC_KEY` (type Secret) with the values from your ZeroSSL dashboard.
 
 Secrets added in the dashboard are **not** touched by Git deployments; `wrangler deploy` never
 overwrites secrets. They are also never displayed again, only replaceable.
@@ -565,35 +569,89 @@ and run history are stored in the Durable Object, so they survive deployments.
 
 Out of the box the `.mobileconfig` is unsigned and iOS shows a red **Not Signed** notice during
 installation. It still installs; the notice is cosmetic but confusing for users. FlareCard can sign
-profiles automatically with a free Let's Encrypt certificate, entirely by itself:
+profiles automatically with a free certificate that it obtains and renews entirely by itself, using
+the ACME protocol (the same protocol Let's Encrypt clients use).
 
-1. Make sure the Worker is reachable under its public hostname (`workers.dev` or the custom domain
-   from section 9) and that `PUBLIC_HOST` matches it, or open the admin UI under that hostname.
-2. **Device setup → Profile signing**: optionally enter a contact e-mail (Let's Encrypt sends
-   expiry warnings there, which you should never receive because renewal is automatic) and switch
+#### Why ZeroSSL and not Let's Encrypt on Cloudflare
+
+Let's Encrypt's API (`acme-v02.api.letsencrypt.org`) is itself hosted behind Cloudflare. A Cloudflare
+Worker that talks to another Cloudflare-fronted origin over TLS gets an **HTTP 525 (SSL handshake
+failed)** from the edge instead of an answer; this is a platform restriction, not a bug in FlareCard
+or in Let's Encrypt, and no challenge type (http-01, dns-01) changes it because the *API* is
+unreachable, not the validation. **ZeroSSL** (and Google Trust Services) host their ACME APIs outside
+Cloudflare, are free for unlimited 90-day certificates via ACME, issue certificates trusted by every
+current iOS/macOS/Android release, and are therefore what `wrangler.jsonc` points at by default. The
+only difference in setup is that these CAs require **External Account Binding (EAB)**: a key id and an
+HMAC key from your (free) ZeroSSL account that FlareCard presents once when it registers its ACME
+account. On self-hosted workerd you may use Let's Encrypt instead by setting `ACME_DIRECTORY_URL` to
+an empty value; there the 525 problem does not exist.
+
+#### Step by step: ZeroSSL
+
+1. **Create a free ZeroSSL account** at <https://app.zerossl.com/signup> (e-mail + password; no
+   payment details needed for ACME certificates).
+2. **Generate EAB credentials**: in the ZeroSSL dashboard open **Developer** (left sidebar) → section
+   **EAB Credentials for ACME Clients** → **Generate**. You get two values:
+   - **EAB KID** — a short identifier such as `a1B2c3D4e5F6g7H8`
+   - **EAB HMAC Key** — a long base64url string
+   
+   Copy both; the HMAC key is shown only once. The credentials do not expire and one pair can be
+   reused for any number of servers/hostnames.
+3. **Add them as Worker secrets**. Either with the CLI from the repository directory:
+
+   ```bash
+   npx wrangler secret put ACME_EAB_KID        # paste the EAB KID
+   npx wrangler secret put ACME_EAB_HMAC_KEY   # paste the EAB HMAC Key
+   ```
+
+   or in the dashboard: **Workers & Pages → flarecard → Settings → Variables and Secrets → Add**,
+   type **Secret**, one entry per name. Secrets are live within seconds, no redeploy needed.
+4. **Check the directory variable**: `wrangler.jsonc` ships with
+   `"ACME_DIRECTORY_URL": "https://acme.zerossl.com/v2/DV90"`. If you changed the `vars` block
+   earlier, make sure this line is still there (it is plain text, not a secret; with Git deployments
+   edit it in the repository, see section 8.4).
+5. **Make sure the Worker is reachable under its public hostname** (`workers.dev` or the custom
+   domain from section 9) and that `PUBLIC_HOST` matches it, or simply open the admin UI under that
+   hostname. ZeroSSL validates ownership by fetching
+   `http://<host>/.well-known/acme-challenge/<token>`, which FlareCard answers itself; Cloudflare's
+   HTTPS redirect is followed by the CA, nothing else to configure. Cloudflare Access or WAF rules must
+   not cover `/.well-known/*`.
+6. **Switch it on**: **Device setup → Profile signing**. The footer of the card shows
+   `Certificate authority: https://acme.zerossl.com/v2/DV90 (External Account Binding configured)`;
+   if the parenthesis is missing, the secrets are not set. Optionally enter a contact e-mail and switch
    **Sign profiles automatically** on.
-3. Within about ten to thirty seconds the badge turns green **Signed** and the card shows the
-   certificate's validity. Every profile downloaded from the Users page from now on is a CMS
-   `SignedData` envelope; iPhones and Macs show **Verified** and the hostname as signer.
+7. **Wait**: the card polls every two seconds and walks through *Requesting a certificate from
+   ZeroSSL…* → *Waiting for ZeroSSL to verify …* → *Certificate is being issued…*. ZeroSSL is usually
+   done within 30–90 seconds, occasionally a few minutes. The badge turns green **Signed** and the card
+   shows the certificate's validity (90 days). Every profile downloaded from the Users page from now
+   on is a CMS `SignedData` envelope; iPhones and Macs show **Verified** and the hostname as signer.
 
-What happens underneath: FlareCard generates an RSA key, registers an ACME account, orders a
-certificate for the hostname, answers Let's Encrypt's `http://<host>/.well-known/acme-challenge/…`
-request from the Worker itself (Cloudflare's HTTPS redirect is followed by Let's Encrypt, nothing to
-configure), finalises the order and stores key, certificate chain and account in the Durable Object
-next to your contacts. Renewal happens without any scheduler: whenever an admin request or a profile
-download notices the certificate has less than 30 days left, a renewal runs in the background and the
-old certificate keeps signing until the new one is in place. There is no cron trigger, no DNS API
-token, no additional Cloudflare product, and nothing to rotate by hand.
+If the state machine is interrupted (you close the browser tab while it is still "Waiting"), nothing
+is lost: the next admin request or profile download resumes the pending order exactly where it stood.
+
+#### What happens underneath
+
+FlareCard generates an RSA-2048 key, registers an ACME account at ZeroSSL (signing the registration
+with your EAB key so ZeroSSL can link it to your ZeroSSL account), orders a certificate for the
+hostname, answers the http-01 challenge from the Worker itself, finalises the order and stores key,
+certificate chain and account in the Durable Object next to your contacts. Renewal happens without any
+scheduler: whenever an admin request or a profile download notices the certificate has less than 30
+days left, a renewal runs in the background and the old certificate keeps signing until the new one is
+in place. The ACME account and EAB registration are created once and reused for all renewals. There is
+no cron trigger, no DNS API token, no additional Cloudflare product, and nothing to rotate by hand.
 
 Notes:
 
+- **Google Trust Services instead of ZeroSSL**: set `ACME_DIRECTORY_URL` to
+  `https://dv.acme-v02.api.pki.goog/directory` and obtain EAB credentials in the Google Cloud console
+  (Public CA API → `gcloud publicca external-account-keys create`). Same two secrets, same flow.
 - **Bring your own certificate instead**: set the `PROFILE_SIGNING_KEY` and `PROFILE_SIGNING_CERT`
   secrets (PEM; leaf first, then intermediates) and FlareCard uses them in preference to the automatic
   one. You are then responsible for rotating them before expiry.
 - **Hostname changes**: the card warns when the certificate was issued for a different name than the
   one you are currently using; **Renew now** requests one for the current hostname.
-- **Rehearsing**: set `ACME_DIRECTORY_URL` to the Let's Encrypt staging directory to try the flow
-  without touching production rate limits (staging certificates are not trusted by devices).
+- **Switching CA later**: change `ACME_DIRECTORY_URL` (and the EAB secrets); FlareCard registers a new
+  account at the new CA on the next order and keeps the existing certificate until then.
 - **MDM**: if you push the CardDAV payload from an MDM, it signs the profile itself and FlareCard's
   profile becomes irrelevant.
 
@@ -871,8 +929,24 @@ original `migrations` block; never edit past migrations.
 **`wrangler deploy` fails with "Assets directory ./ui/dist not found".**
 Run `npm run build:ui` (or use `npm run deploy`, which does it for you).
 
-**Profile signing shows "Failed" / "Validation failed: … Let's Encrypt must be able to reach …".**
-Let's Encrypt could not fetch `http://<host>/.well-known/acme-challenge/<token>`. Check from outside
+**Profile signing shows "Failed: … Cloudflare edge error (525) …" or "ACME directory … returned 525".**
+`ACME_DIRECTORY_URL` points at Let's Encrypt, whose API is behind Cloudflare and unreachable from a
+Worker. Switch to ZeroSSL as described in section 13: set `ACME_DIRECTORY_URL` to
+`https://acme.zerossl.com/v2/DV90` and add the `ACME_EAB_KID`/`ACME_EAB_HMAC_KEY` secrets, then press
+**Renew now**.
+
+**Profile signing shows "Failed: ZeroSSL requires External Account Binding …".**
+The `ACME_EAB_KID` and `ACME_EAB_HMAC_KEY` secrets are missing (the card footer shows whether they
+are configured). Generate them in the ZeroSSL dashboard under **Developer → EAB Credentials for ACME
+Clients** and add both as secrets; both must be set. Then **Renew now**.
+
+**Profile signing shows "Creating ACME account failed (403) …" / "… externalAccountRequired …".**
+ZeroSSL rejected the EAB signature: the HMAC key was pasted incompletely or with an extra character,
+or the KID and HMAC key belong to different generated pairs. Generate a fresh pair, replace both
+secrets and press **Renew now**.
+
+**Profile signing shows "Failed" / "Validation failed: … ZeroSSL must be able to reach …".**
+The CA could not fetch `http://<host>/.well-known/acme-challenge/<token>`. Check from outside
 your network that `curl -i http://<host>/.well-known/acme-challenge/test` reaches the Worker (a
 FlareCard `404 Not Found` is the correct answer for an unknown token). Typical causes: `PUBLIC_HOST`
 set to a name that does not point at the Worker; the custom domain not yet active; a Cloudflare Access
@@ -881,15 +955,16 @@ that answers ACME challenges itself for that path. FlareCard retries with a grow
 card shows the CA's exact error; press **Renew now** after fixing the cause.
 
 **Profile signing shows "Failed: … rateLimited …".**
-Let's Encrypt limits certificates per hostname (currently 50 per week) and failed validations
-(5 per hour). This only happens after repeated failed attempts; wait for the stated time or rehearse
-against the staging directory (`ACME_DIRECTORY_URL`).
+CAs limit certificates per hostname and failed validations per hour (Let's Encrypt: 50 per week and
+5 failed validations per hour; ZeroSSL has similar limits for ACME). This only happens after repeated
+failed attempts; wait for the stated time, or rehearse on workerd against the Let's Encrypt staging
+directory.
 
 **iPhone shows "Not Verified" for a signed profile.**
 The signing certificate does not chain to a root the device trusts: you are using the staging
 directory, or `PROFILE_SIGNING_CERT` lacks the intermediate certificate, or the certificate expired
-(the card shows the validity). Automatic Let's Encrypt certificates are always trusted by current
-iOS/macOS versions.
+(the card shows the validity). Automatic ZeroSSL and Let's Encrypt certificates are always trusted by
+current iOS/macOS versions.
 
 **The scheduled re-sync ran later than the configured time.**
 Expected within a few minutes: the schedule is evaluated on incoming requests, so the run happens

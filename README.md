@@ -154,7 +154,8 @@ Environment / secrets:
 | `AUTH_RATE_LIMIT_IP` | Var, optional (default `60`). Failed auth attempts allowed per client IP per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_USER` | Var, optional (default `15`). Failed auth attempts allowed per username per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Var, optional (default `600`). Rate-limit window; a successful login resets the counters. |
-| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates (default: Let's Encrypt production; use the staging URL while testing). |
+| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates. `wrangler.jsonc` sets ZeroSSL (works from Workers); empty = Let's Encrypt production (workerd only, see [Signed profiles](#signed-profiles)). |
+| `ACME_EAB_KID` / `ACME_EAB_HMAC_KEY` | Secrets, required for ZeroSSL and Google Trust Services. External Account Binding credentials from the CA's dashboard; must be set together. |
 | `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | Secrets, optional. Your own PEM key and certificate chain for signing profiles; takes precedence over the automatic certificate. |
 | `SIGNING_CERTS` | Binding, optional (workerd). `disk` service with `privkey.pem`+`fullchain.pem` or `<host>.key`+`<host>.crt`, e.g. your Caddy/certbot directory. |
 
@@ -194,7 +195,7 @@ The exact same bundle runs on open-source workerd. `workerd.capnp` configures:
 - a SQLite-enabled Durable Object namespace with **`localDisk`** storage under `./data`;
 - a read-only `disk` service for the built admin UI bound as `ASSETS`;
 - config/secrets pulled from the process environment (`fromEnvironment`);
-- an `internet` network service so the Worker can talk to Let's Encrypt when automatic profile
+- an `internet` network service so the Worker can talk to the ACME CA when automatic profile
   signing is enabled (remove it if you never use that feature), and a commented-out
   `signing-certs` disk service for reusing the proxy's certificate (see [Signed profiles](#signed-profiles)).
 
@@ -281,9 +282,9 @@ server {
 Set `PUBLIC_HOST=contacts.example.com` so the generated `.mobileconfig` profiles use the public
 hostname and port 443 regardless of how the proxy forwards.
 
-If you enable **automatic profile signing**, Let's Encrypt fetches
+If you enable **automatic profile signing**, the CA (Let's Encrypt or ZeroSSL) fetches
 `http://contacts.example.com/.well-known/acme-challenge/<token>` and FlareCard must answer it.
-Both configurations above already work: the port-80 redirect to HTTPS is followed by Let's Encrypt
+Both configurations above already work: the port-80 redirect to HTTPS is followed by the CA
 and the HTTPS server proxies the path to workerd. Only if something else owns
 `/.well-known/acme-challenge/` on port 80 (certbot `--webroot`, Caddy's own challenge handler is
 fine) do you need to forward that path explicitly, or skip ACME in FlareCard and reuse the proxy's
@@ -412,27 +413,46 @@ Three ways to get a certificate, in order of precedence:
 2. **The reverse proxy's certificate** (workerd only) — bind a `disk` service as `SIGNING_CERTS`
    pointing at the directory Caddy or certbot maintains; FlareCard reads the current key and chain on
    each download, so renewals are picked up automatically.
-3. **Automatic (recommended on Cloudflare)** — **Device setup → Profile signing → Sign profiles
+3. **Automatic (recommended)** — **Device setup → Profile signing → Sign profiles
    automatically**. FlareCard is its own ACME client: it generates an RSA key, orders a certificate
-   for `PUBLIC_HOST` from Let's Encrypt, answers the `http-01` challenge on
+   for `PUBLIC_HOST` from the CA in `ACME_DIRECTORY_URL`, answers the `http-01` challenge on
    `/.well-known/acme-challenge/` itself, stores key, chain and account in the Durable Object and
    signs with the result. Renewal is lazy: whenever an admin request or profile download finds the
    certificate within 30 days (or a third of its lifetime) of expiry, a renewal runs in the
    background while the still-valid certificate keeps signing. No cron triggers, alarms, DNS API
    tokens or extra Cloudflare products are involved; the whole flow works the same on workerd.
 
+**Which CA?** On **Cloudflare Workers use ZeroSSL** (the default in `wrangler.jsonc`). Let's Encrypt's
+API is hosted behind Cloudflare itself, and a Worker calling another Cloudflare-fronted origin gets an
+HTTP 525 from the edge, so Let's Encrypt is unreachable from Workers regardless of challenge type.
+ZeroSSL and Google Trust Services host their ACME endpoints elsewhere and require **External Account
+Binding (EAB)**, which FlareCard supports:
+
+| CA | `ACME_DIRECTORY_URL` | EAB | Works from |
+| --- | --- | --- | --- |
+| ZeroSSL (free) | `https://acme.zerossl.com/v2/DV90` | required: `ACME_EAB_KID` + `ACME_EAB_HMAC_KEY` | Cloudflare Workers, workerd |
+| Google Trust Services (free) | `https://dv.acme-v02.api.pki.goog/directory` | required (Google Cloud "Public CA" external account key) | Cloudflare Workers, workerd |
+| Let's Encrypt (free) | empty / `https://acme-v02.api.letsencrypt.org/directory` | none | workerd only |
+
+ZeroSSL setup in short: sign up free at app.zerossl.com → **Developer → EAB Credentials for ACME
+Clients → Generate** → `wrangler secret put ACME_EAB_KID` and `wrangler secret put ACME_EAB_HMAC_KEY`
+(or add both as *Secret* in the dashboard) → switch signing on in the admin UI. The card's footer shows
+the active directory and whether EAB is configured. Step-by-step with screenshots-level detail:
+[docs/deploy-cloudflare.md](docs/deploy-cloudflare.md), section 13.
+
 Requirements for the automatic mode: `PUBLIC_HOST` (or the host you open the admin UI with) must be a
 public DNS name that reaches FlareCard over HTTP/HTTPS. Any publicly trusted certificate works for
 profile signing; iOS shows the certificate's common name under "Signed by". Failures (host not
-reachable, rate limits) are shown on the card and retried with backoff; profiles fall back to
-unsigned until a certificate exists. Set `ACME_DIRECTORY_URL` to the Let's Encrypt staging directory
-to rehearse without hitting production rate limits (staging certificates are not trusted by devices).
+reachable, missing EAB, rate limits) are shown on the card and retried with backoff; profiles fall back
+to unsigned until a certificate exists. On workerd, set `ACME_DIRECTORY_URL` to the Let's Encrypt
+staging directory to rehearse without hitting production rate limits (staging certificates are not
+trusted by devices).
 
 Verify a downloaded profile yourself:
 
 ```bash
 openssl cms -verify -inform DER -in flarecard-jane.mobileconfig -purpose any \
-  -CAfile <(curl -s https://letsencrypt.org/certs/isrgrootx1.pem)     # prints the plist on success
+  -CAfile /etc/ssl/certs/ca-certificates.crt                           # prints the plist on success
 ```
 
 ---

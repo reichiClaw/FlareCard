@@ -9,7 +9,8 @@ import { selfSigned } from "./certs";
 import { MemoryStorage } from "../src/storage/memory";
 import { ProfileSigner, normalizeHost, type SigningStatus } from "../src/lib/signing";
 import { OIDS, decodeOid, derToPem, parseCertificate, parseDer } from "../src/lib/asn1";
-import { buildCsr } from "../src/lib/acme";
+import { buildCsr, providerName } from "../src/lib/acme";
+import { base64UrlEncode } from "../src/lib/crypto";
 
 const hasOpenssl = (() => {
   try {
@@ -88,7 +89,7 @@ describe("automatic profile signing (ACME http-01)", () => {
     expect(status.email).toBe("it@example.com");
     expect(status.certificate).toMatchObject({ subject: HOST, dnsNames: [HOST], algorithm: "RSA" });
     expect(status.certificate!.daysLeft).toBeGreaterThanOrEqual(89);
-    expect(status.message).toContain("Let's Encrypt");
+    expect(status.message).toContain("renews automatically");
 
     // The full protocol was exercised: account, order, authz poll(s), challenge, finalize, order poll(s), cert.
     expect(acme.calls).toEqual(
@@ -154,6 +155,96 @@ describe("automatic profile signing (ACME http-01)", () => {
     expect(acme.orders.size).toBe(ordersBefore + 1);
     status = await signer.status(HOST);
     expect(status.phase).toBe("error");
+  });
+
+  describe("external account binding (ZeroSSL / Google Trust Services)", () => {
+    const eab = { kid: "zerossl-kid-123", hmacKey: base64UrlEncode(crypto.getRandomValues(new Uint8Array(32))) };
+
+    it("binds the new account with an HS256 JWS and obtains a certificate", async () => {
+      const ca = await selfSigned("Fake ZeroSSL CA", "ec", { ca: true });
+      let signer!: ProfileSigner;
+      const acme = fakeAcme({ ca, eab, validate: (_d, token) => signer.challengeResponse(token) });
+      signer = new ProfileSigner(
+        new MemoryStorage(),
+        { ACME_DIRECTORY_URL: acme.directory, ACME_EAB_KID: eab.kid, ACME_EAB_HMAC_KEY: eab.hmacKey },
+        acme.fetch,
+        undefined,
+        10,
+      );
+      await signer.enable(HOST, null);
+      await signer.advance(10_000);
+      const status = await signer.status(HOST);
+      expect(status.phase).toBe("issued");
+      expect(status.eabConfigured).toBe(true);
+      expect(status.acmeProvider).toBe("acme.test");
+      expect(status.message).toContain("Signing with a acme.test certificate");
+      expect(await signer.sign(new Uint8Array([1, 2, 3]))).not.toBeNull();
+    });
+
+    it("accepts a padded/base64 HMAC key as handed out by some CAs", async () => {
+      const ca = await selfSigned("Fake ZeroSSL CA", "ec", { ca: true });
+      let signer!: ProfileSigner;
+      const acme = fakeAcme({ ca, eab, validate: (_d, token) => signer.challengeResponse(token) });
+      const padded = eab.hmacKey + "=".repeat((4 - (eab.hmacKey.length % 4)) % 4);
+      signer = new ProfileSigner(
+        new MemoryStorage(),
+        { ACME_DIRECTORY_URL: acme.directory, ACME_EAB_KID: ` ${eab.kid} `, ACME_EAB_HMAC_KEY: padded },
+        acme.fetch,
+        undefined,
+        10,
+      );
+      await signer.enable(HOST, null);
+      await signer.advance(10_000);
+      expect((await signer.status(HOST)).phase).toBe("issued");
+    });
+
+    it("explains what to configure when the CA requires EAB and none is set", async () => {
+      const ca = await selfSigned("Fake ZeroSSL CA", "ec", { ca: true });
+      const acme = fakeAcme({ ca, eab, validate: async () => null });
+      const signer = new ProfileSigner(new MemoryStorage(), { ACME_DIRECTORY_URL: acme.directory }, acme.fetch, undefined, 10);
+      await signer.enable(HOST, null);
+      await signer.advance(5000);
+      const status = await signer.status(HOST);
+      expect(status.phase).toBe("error");
+      expect(status.error).toMatch(/requires External Account Binding.*ACME_EAB_KID and ACME_EAB_HMAC_KEY/);
+      expect(acme.calls.filter((c) => c.endsWith("/new-acct"))).toHaveLength(0);
+      expect(acme.orders.size).toBe(0);
+    });
+
+    it("reports the CA's rejection of wrong EAB credentials", async () => {
+      const ca = await selfSigned("Fake ZeroSSL CA", "ec", { ca: true });
+      const acme = fakeAcme({ ca, eab, validate: async () => null });
+      const signer = new ProfileSigner(
+        new MemoryStorage(),
+        { ACME_DIRECTORY_URL: acme.directory, ACME_EAB_KID: eab.kid, ACME_EAB_HMAC_KEY: base64UrlEncode(new Uint8Array(32)) },
+        acme.fetch,
+        undefined,
+        10,
+      );
+      await signer.enable(HOST, null);
+      await signer.advance(5000);
+      const status = await signer.status(HOST);
+      expect(status.phase).toBe("error");
+      expect(status.error).toMatch(/Creating ACME account failed \(403\): EAB signature invalid/);
+    });
+
+    it("rejects half-configured EAB credentials before contacting the CA", async () => {
+      const ca = await selfSigned("Fake ZeroSSL CA", "ec", { ca: true });
+      const acme = fakeAcme({ ca, eab, validate: async () => null });
+      const signer = new ProfileSigner(new MemoryStorage(), { ACME_DIRECTORY_URL: acme.directory, ACME_EAB_KID: eab.kid }, acme.fetch, undefined, 10);
+      await signer.enable(HOST, null);
+      await signer.advance(5000);
+      expect((await signer.status(HOST)).error).toBe("ACME_EAB_KID and ACME_EAB_HMAC_KEY must be set together");
+      expect(acme.calls.filter((c) => c.endsWith("/new-acct"))).toHaveLength(0);
+    });
+
+    it("names well-known CAs from the directory URL", () => {
+      expect(providerName("https://acme-v02.api.letsencrypt.org/directory")).toBe("Let's Encrypt");
+      expect(providerName("https://acme-staging-v02.api.letsencrypt.org/directory")).toBe("Let's Encrypt (staging)");
+      expect(providerName("https://acme.zerossl.com/v2/DV90")).toBe("ZeroSSL");
+      expect(providerName("https://dv.acme-v02.api.pki.goog/directory")).toBe("Google Trust Services");
+      expect(providerName("https://pebble:14000/dir")).toBe("pebble");
+    });
   });
 
   it("renews lazily when the certificate approaches expiry and reuses the key", async () => {

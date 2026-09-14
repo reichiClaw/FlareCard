@@ -21,6 +21,11 @@ export interface FakeAcmeOptions {
   /** Lifetime of issued certificates in days. */
   lifetimeDays?: number;
   now?: () => number;
+  /**
+   * When set, the directory advertises externalAccountRequired and newAccount must
+   * carry a valid EAB JWS signed with this HMAC key (ZeroSSL / Google Trust Services style).
+   */
+  eab?: { kid: string; hmacKey: string };
 }
 
 interface Order {
@@ -35,6 +40,25 @@ interface Order {
   validated?: boolean;
   certificate?: string;
   error?: { type: string; detail: string };
+}
+
+async function verifyEab(
+  eab: { protected: string; payload: string; signature: string } | undefined,
+  accountJwk: JsonWebKey,
+  newAccountUrl: string,
+  expected: { kid: string; hmacKey: string },
+): Promise<string | null> {
+  if (!eab) return "externalAccountBinding is required";
+  const header = JSON.parse(new TextDecoder().decode(base64UrlDecode(eab.protected))) as { alg: string; kid: string; url: string; nonce?: string };
+  if (header.alg !== "HS256") return `unsupported EAB alg ${header.alg}`;
+  if (header.kid !== expected.kid) return "unknown EAB key id";
+  if (header.url !== newAccountUrl) return "EAB url mismatch";
+  if ("nonce" in header) return "EAB must not carry a nonce";
+  const inner = JSON.parse(new TextDecoder().decode(base64UrlDecode(eab.payload))) as JsonWebKey;
+  if ((await jwkThumbprint(inner)) !== (await jwkThumbprint(accountJwk))) return "EAB payload does not match account key";
+  const key = await crypto.subtle.importKey("raw", base64UrlDecode(expected.hmacKey), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const ok = await crypto.subtle.verify("HMAC", key, base64UrlDecode(eab.signature), new TextEncoder().encode(`${eab.protected}.${eab.payload}`));
+  return ok ? null : "EAB signature invalid";
 }
 
 export function fakeAcme(opts: FakeAcmeOptions) {
@@ -82,7 +106,12 @@ export function fakeAcme(opts: FakeAcmeOptions) {
     calls.push(`${init?.method ?? "GET"} ${path}`);
 
     if (path === "/dir") {
-      return json(200, { newNonce: `${base}/nonce`, newAccount: `${base}/new-acct`, newOrder: `${base}/new-order`, meta: {} });
+      return json(200, {
+        newNonce: `${base}/nonce`,
+        newAccount: `${base}/new-acct`,
+        newOrder: `${base}/new-order`,
+        meta: opts.eab ? { externalAccountRequired: true } : {},
+      });
     }
     if (path === "/nonce") return new Response(null, { status: 200, headers: { "Replay-Nonce": nonce() } });
 
@@ -94,6 +123,10 @@ export function fakeAcme(opts: FakeAcmeOptions) {
 
     if (path === "/new-acct") {
       if (!header.jwk) return problem(400, "malformed", "jwk required");
+      if (opts.eab) {
+        const eabProblem = await verifyEab(payload?.externalAccountBinding, header.jwk, input, opts.eab);
+        if (eabProblem) return problem(403, "externalAccountRequired", eabProblem);
+      }
       const kid = `${base}/acct/${nextId++}`;
       accounts.set(kid, header.jwk);
       return json(201, { status: "valid", contact: payload?.contact ?? [] }, { Location: kid });

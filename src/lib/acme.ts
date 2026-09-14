@@ -4,7 +4,7 @@
  * incrementally and persist state between steps. Web-standard APIs only.
  */
 
-import { base64UrlEncode } from "./crypto";
+import { base64UrlDecode, base64UrlEncode } from "./crypto";
 import {
   OIDS,
   bitString,
@@ -23,6 +23,32 @@ import {
 
 export const LETS_ENCRYPT_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory";
 export const LETS_ENCRYPT_STAGING_DIRECTORY = "https://acme-staging-v02.api.letsencrypt.org/directory";
+export const ZEROSSL_DIRECTORY = "https://acme.zerossl.com/v2/DV90";
+export const GOOGLE_TRUST_SERVICES_DIRECTORY = "https://dv.acme-v02.api.pki.goog/directory";
+
+/** Human-readable CA name for a directory URL. */
+export function providerName(directoryUrl: string): string {
+  let host = "";
+  try {
+    host = new URL(directoryUrl).hostname;
+  } catch {
+    return directoryUrl;
+  }
+  if (host.endsWith("letsencrypt.org")) return host.includes("staging") ? "Let's Encrypt (staging)" : "Let's Encrypt";
+  if (host.endsWith("zerossl.com")) return "ZeroSSL";
+  if (host.endsWith("pki.goog")) return "Google Trust Services";
+  return host;
+}
+
+/**
+ * External Account Binding (RFC 8555 §7.3.4): ties the new ACME account to an
+ * account at the CA. ZeroSSL and Google Trust Services require it; the CA hands
+ * out a key identifier and a base64url-encoded HMAC key.
+ */
+export interface ExternalAccountBinding {
+  kid: string;
+  hmacKey: string;
+}
 
 export interface AcmeDirectory {
   newNonce: string;
@@ -178,12 +204,37 @@ export class AcmeClient {
     throw new AcmeError(`${what} failed (${res.status})${detail}`, problem, res.status);
   }
 
+  /**
+   * Builds the externalAccountBinding JWS (RFC 8555 §7.3.4): an HS256 JWS over the
+   * account's public JWK, keyed with the HMAC key the CA handed out.
+   */
+  static async externalAccountBinding(publicJwk: JsonWebKey, eab: ExternalAccountBinding, newAccountUrl: string) {
+    let raw: Uint8Array;
+    try {
+      raw = base64UrlDecode(eab.hmacKey.trim().replace(/=+$/, ""));
+    } catch {
+      throw new AcmeError("ACME_EAB_HMAC_KEY is not valid base64url");
+    }
+    if (raw.length === 0) throw new AcmeError("ACME_EAB_HMAC_KEY is empty");
+    const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const protectedB64 = b64json({ alg: "HS256", kid: eab.kid.trim(), url: newAccountUrl });
+    const payloadB64 = b64json(publicJwk);
+    const sig = await crypto.subtle.sign("HMAC", key, enc.encode(`${protectedB64}.${payloadB64}`));
+    return { protected: protectedB64, payload: payloadB64, signature: base64UrlEncode(new Uint8Array(sig)) };
+  }
+
   /** Creates or looks up the account for these keys. */
-  async createAccount(keys: AcmeAccountKeys, email: string | null): Promise<AcmeAccount> {
+  async createAccount(keys: AcmeAccountKeys, email: string | null, eab?: ExternalAccountBinding | null): Promise<AcmeAccount> {
     const dir = await this.directory();
-    if (dir.meta?.externalAccountRequired) throw new AcmeError("This ACME server requires external account binding, which FlareCard does not support");
+    if (dir.meta?.externalAccountRequired && !eab) {
+      throw new AcmeError(
+        `${providerName(this.directoryUrl)} requires External Account Binding. Set the ACME_EAB_KID and ACME_EAB_HMAC_KEY secrets (see README "Profile signing").`,
+        { type: "urn:ietf:params:acme:error:externalAccountRequired" },
+      );
+    }
     const payload: Record<string, unknown> = { termsOfServiceAgreed: true };
     if (email) payload.contact = [`mailto:${email}`];
+    if (eab) payload.externalAccountBinding = await AcmeClient.externalAccountBinding(keys.publicJwk, eab, dir.newAccount);
     const res = await this.expect(await this.post(dir.newAccount, payload, keys), "Creating ACME account", [200, 201]);
     const kid = res.headers.get("location");
     if (!kid) throw new AcmeError("ACME server did not return an account URL");

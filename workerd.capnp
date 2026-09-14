@@ -53,11 +53,14 @@ const flarecard :Workerd.Worker = (
     (name = "AUTH_RATE_LIMIT_IP", fromEnvironment = "AUTH_RATE_LIMIT_IP"),
     (name = "AUTH_RATE_LIMIT_USER", fromEnvironment = "AUTH_RATE_LIMIT_USER"),
     (name = "AUTH_RATE_LIMIT_WINDOW_SECONDS", fromEnvironment = "AUTH_RATE_LIMIT_WINDOW_SECONDS"),
-    # Profile signing. Either let FlareCard obtain a Let's Encrypt certificate itself
-    # (admin UI switch; ACME_DIRECTORY_URL may point at the staging directory for tests),
-    # provide PEM material through the environment, or mount the proxy's certificate
-    # directory via the SIGNING_CERTS disk service above.
+    # Profile signing. Either let FlareCard obtain an ACME certificate itself (admin UI
+    # switch; ACME_DIRECTORY_URL defaults to Let's Encrypt, which works fine from workerd;
+    # ZeroSSL/Google Trust Services need the two EAB values), provide PEM material through
+    # the environment, or mount the proxy's certificate directory via the SIGNING_CERTS
+    # disk service above.
     (name = "ACME_DIRECTORY_URL", fromEnvironment = "ACME_DIRECTORY_URL"),
+    (name = "ACME_EAB_KID", fromEnvironment = "ACME_EAB_KID"),
+    (name = "ACME_EAB_HMAC_KEY", fromEnvironment = "ACME_EAB_HMAC_KEY"),
     (name = "PROFILE_SIGNING_KEY", fromEnvironment = "PROFILE_SIGNING_KEY"),
     (name = "PROFILE_SIGNING_CERT", fromEnvironment = "PROFILE_SIGNING_CERT"),
     # (name = "SIGNING_CERTS", service = "signing-certs"),

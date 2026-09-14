@@ -34,14 +34,22 @@ import {
   describeProblem,
   generateAccountKeys,
   keyAuthorization,
+  providerName,
   type AcmeAccount,
   type AcmeAccountKeys,
+  type ExternalAccountBinding,
   type FetchLike,
 } from "./acme";
 
 export interface SigningEnv {
   /** ACME directory; defaults to Let's Encrypt production. */
   ACME_DIRECTORY_URL?: string;
+  /**
+   * External Account Binding credentials (RFC 8555 §7.3.4). Required by ZeroSSL and
+   * Google Trust Services; ignored by Let's Encrypt.
+   */
+  ACME_EAB_KID?: string;
+  ACME_EAB_HMAC_KEY?: string;
   /** Operator-managed signing material (PEM). Takes precedence over the managed certificate. */
   PROFILE_SIGNING_KEY?: string;
   PROFILE_SIGNING_CERT?: string;
@@ -108,6 +116,10 @@ export interface SigningStatus {
   inProgress: boolean;
   renewalDue: boolean;
   acmeDirectory: string;
+  /** Human-readable CA name derived from the directory URL. */
+  acmeProvider: string;
+  /** Whether ACME_EAB_KID/ACME_EAB_HMAC_KEY are set. */
+  eabConfigured: boolean;
 }
 
 interface LoadedSigner {
@@ -138,6 +150,19 @@ export class ProfileSigner {
 
   get directoryUrl(): string {
     return this.env.ACME_DIRECTORY_URL?.trim() || LETS_ENCRYPT_DIRECTORY;
+  }
+
+  get provider(): string {
+    return providerName(this.directoryUrl);
+  }
+
+  /** EAB credentials from the environment, or null when neither is set. */
+  get externalAccountBinding(): ExternalAccountBinding | null {
+    const kid = this.env.ACME_EAB_KID?.trim();
+    const hmacKey = this.env.ACME_EAB_HMAC_KEY?.trim();
+    if (!kid && !hmacKey) return null;
+    if (!kid || !hmacKey) throw new SigningError("ACME_EAB_KID and ACME_EAB_HMAC_KEY must be set together");
+    return { kid, hmacKey };
   }
 
   // -------------------------------------------------------------------------
@@ -266,9 +291,9 @@ export class ProfileSigner {
     let message: string;
     if (external) message = `Signing with the operator-provided certificate for ${external.info.commonName ?? external.info.dnsNames[0] ?? "unknown host"}.`;
     else if (!enabled) message = "Profiles are downloaded unsigned. iOS shows them as “Not Signed”.";
-    else if (inProgress) message = phaseMessage(phase, state?.domain ?? domain ?? "");
+    else if (inProgress) message = phaseMessage(phase, state?.domain ?? domain ?? "", this.provider);
     else if (phase === "error") message = `Last attempt failed: ${state?.error ?? "unknown error"}. FlareCard retries automatically; profiles are unsigned until it succeeds.`;
-    else if (managed) message = `Signing with a Let's Encrypt certificate for ${managed.info.commonName ?? domain}; renews automatically.`;
+    else if (managed) message = `Signing with a ${this.provider} certificate for ${managed.info.commonName ?? domain}; renews automatically.`;
     else message = "Enabled, waiting to request a certificate.";
 
     return {
@@ -284,6 +309,8 @@ export class ProfileSigner {
       inProgress,
       renewalDue,
       acmeDirectory: this.directoryUrl,
+      acmeProvider: this.provider,
+      eabConfigured: !!(this.env.ACME_EAB_KID?.trim() && this.env.ACME_EAB_HMAC_KEY?.trim()),
     };
   }
 
@@ -404,8 +431,23 @@ export class ProfileSigner {
         if (state.phase === "issued") break;
       }
     } catch (e) {
-      await this.fail(state, e instanceof Error ? e.message : String(e));
+      await this.fail(state, this.explainError(e));
     }
+  }
+
+  /**
+   * Turns low-level ACME/network failures into something an admin can act on.
+   * The 525 case is Cloudflare-specific: a Worker cannot reach an origin that is
+   * itself behind Cloudflare with a TLS handshake the edge accepts, and Let's
+   * Encrypt's API is exactly that. ZeroSSL and Google Trust Services are not.
+   */
+  private explainError(e: unknown): string {
+    const message = e instanceof Error ? e.message : String(e);
+    const status = e instanceof AcmeError ? e.httpStatus : 0;
+    if (status === 525 || status === 521 || status === 522) {
+      return `${message}. ${this.provider} answered with a Cloudflare edge error (${status}); a Cloudflare Worker cannot reach this CA directly. Switch to ZeroSSL by setting ACME_DIRECTORY_URL plus the ACME_EAB_KID/ACME_EAB_HMAC_KEY secrets (see README "Profile signing").`;
+    }
+    return message;
   }
 
   private async fail(state: AcmeState, error: string): Promise<void> {
@@ -451,7 +493,7 @@ export class ProfileSigner {
         if (authz.status !== "valid") {
           const ch = authz.challenges.find((c) => c.type === "http-01");
           throw new AcmeError(
-            `Validation failed: ${describeProblem(ch?.error, authz.status)}. Let's Encrypt must be able to reach http://${state.domain}/.well-known/acme-challenge/ from the internet.`,
+            `Validation failed: ${describeProblem(ch?.error, authz.status)}. ${this.provider} must be able to reach http://${state.domain}/.well-known/acme-challenge/ from the internet.`,
           );
         }
         return { ...state, phase: "finalizing", ...(await this.finalize(client, account, state.finalizeUrl!, state.domain)) };
@@ -524,7 +566,7 @@ export class ProfileSigner {
     }
     const keys: AcmeAccountKeys = await generateAccountKeys();
     const email = (await this.storage.getSetting(KEYS.email)) || null;
-    const account = await client.createAccount(keys, email);
+    const account = await client.createAccount(keys, email, this.externalAccountBinding);
     const stored: StoredAccount = { ...account, directory: client.directoryUrl };
     await this.storage.setSetting(KEYS.account, JSON.stringify(stored));
     return account;
@@ -535,12 +577,12 @@ export class ProfileSigner {
   }
 }
 
-function phaseMessage(phase: Phase, domain: string): string {
+function phaseMessage(phase: Phase, domain: string, provider: string): string {
   switch (phase) {
     case "ordering":
-      return `Requesting a certificate for ${domain} from Let's Encrypt…`;
+      return `Requesting a certificate for ${domain} from ${provider}…`;
     case "challenging":
-      return `Waiting for Let's Encrypt to verify http://${domain}/.well-known/acme-challenge/…`;
+      return `Waiting for ${provider} to verify http://${domain}/.well-known/acme-challenge/…`;
     case "finalizing":
       return "Certificate is being issued…";
     default:
