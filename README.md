@@ -65,6 +65,7 @@ with an admin web UI for maintaining contacts and users.
 | Libraries | `src/lib/vcard.ts` (parse/serialize vCard 3.0), `xml.ts` (namespace-aware parser + writer), `crypto.ts` (PBKDF2, HMAC), `auth.ts` (Basic + sessions), `csv.ts`, `mobileconfig.ts`, `demo.ts` |
 | Admin UI | `ui/` (React 19, Vite, Tailwind v4, shadcn/ui-style components, TanStack Query) |
 | Runtime configs | `wrangler.jsonc` (Cloudflare), `workerd.capnp` (self-hosted) |
+| External ACME runner | `scripts/acme-runner.ts` (CLI), `scripts/lib/renew.ts` (flow, tested), `.github/workflows/renew-signing-cert.yml` |
 
 ### Data model (inside the Durable Object)
 
@@ -154,7 +155,7 @@ Environment / secrets:
 | `AUTH_RATE_LIMIT_IP` | Var, optional (default `60`). Failed auth attempts allowed per client IP per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_USER` | Var, optional (default `15`). Failed auth attempts allowed per username per window before `429`. `0` disables. |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | Var, optional (default `600`). Rate-limit window; a successful login resets the counters. |
-| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for automatic profile-signing certificates (default: Let's Encrypt production; use the staging URL while testing). |
+| `ACME_DIRECTORY_URL` | Var, optional. ACME directory for the in-Worker profile-signing client (workerd only; default: Let's Encrypt production; use the staging URL while testing). On Cloudflare the external ACME runner has its own `ACME_DIRECTORY_URL` environment variable. |
 | `PROFILE_SIGNING_KEY` / `PROFILE_SIGNING_CERT` | Secrets, optional. Your own PEM key and certificate chain for signing profiles; takes precedence over the automatic certificate. |
 | `SIGNING_CERTS` | Binding, optional (workerd). `disk` service with `privkey.pem`+`fullchain.pem` or `<host>.key`+`<host>.crt`, e.g. your Caddy/certbot directory. |
 
@@ -412,21 +413,60 @@ Three ways to get a certificate, in order of precedence:
 2. **The reverse proxy's certificate** (workerd only) — bind a `disk` service as `SIGNING_CERTS`
    pointing at the directory Caddy or certbot maintains; FlareCard reads the current key and chain on
    each download, so renewals are picked up automatically.
-3. **Automatic (recommended on Cloudflare)** — **Device setup → Profile signing → Sign profiles
+3. **Automatic (self-hosted workerd)** — **Device setup → Profile signing → Sign profiles
    automatically**. FlareCard is its own ACME client: it generates an RSA key, orders a certificate
    for `PUBLIC_HOST` from Let's Encrypt, answers the `http-01` challenge on
    `/.well-known/acme-challenge/` itself, stores key, chain and account in the Durable Object and
    signs with the result. Renewal is lazy: whenever an admin request or profile download finds the
    certificate within 30 days (or a third of its lifetime) of expiry, a renewal runs in the
    background while the still-valid certificate keeps signing. No cron triggers, alarms, DNS API
-   tokens or extra Cloudflare products are involved; the whole flow works the same on workerd.
+   tokens or extra Cloudflare products are involved.
+4. **Automatic via the external ACME runner (Cloudflare Workers)** — see below. Same key handling
+   and the same challenge route, but the conversation with Let's Encrypt happens in a scheduled
+   GitHub Actions job (or any cron host) instead of inside the Worker.
 
-Requirements for the automatic mode: `PUBLIC_HOST` (or the host you open the admin UI with) must be a
+Requirements for the automatic modes: `PUBLIC_HOST` (or the host you open the admin UI with) must be a
 public DNS name that reaches FlareCard over HTTP/HTTPS. Any publicly trusted certificate works for
 profile signing; iOS shows the certificate's common name under "Signed by". Failures (host not
 reachable, rate limits) are shown on the card and retried with backoff; profiles fall back to
 unsigned until a certificate exists. Set `ACME_DIRECTORY_URL` to the Let's Encrypt staging directory
 to rehearse without hitting production rate limits (staging certificates are not trusted by devices).
+
+#### Cloudflare Workers and the 525 problem
+
+Let's Encrypt's API is itself served through Cloudflare. A Worker that `fetch()`es another
+Cloudflare-fronted hostname ("orange-to-orange") cannot complete the TLS handshake and gets
+**HTTP 525** — a long-standing platform limitation that no DNS or SSL setting fixes (`wrangler dev`
+is unaffected, which is why it only shows up after deploying). FlareCard recognises the 525 and
+explains it on the signing card. The in-Worker client therefore only works on self-hosted workerd;
+on Cloudflare use the **external ACME runner**:
+
+- FlareCard keeps the certificate key inside the Durable Object and hands out a **CSR**
+  (`POST /api/signing/csr`).
+- The runner (`npm run acme:renew`, `scripts/acme-runner.ts`) talks to Let's Encrypt, registers the
+  http-01 answer with FlareCard (`PUT /api/signing/challenge`) — FlareCard serves it on
+  `/.well-known/acme-challenge/`, which Let's Encrypt reaches without any 525 issue — and uploads the
+  issued chain (`PUT /api/signing/certificate`). FlareCard verifies that the chain matches its key and
+  hostname, installs it and marks the certificate as *managed by the runner*, which switches the
+  in-Worker client off.
+- The runner renews only when fewer than 30 days remain (`RENEW_BEFORE_DAYS`), so it can run daily.
+  `--force` renews regardless; `--staging` uses the Let's Encrypt staging directory.
+
+The repository ships the workflow [`.github/workflows/renew-signing-cert.yml`](.github/workflows/renew-signing-cert.yml).
+In your fork set the Actions **variable** `FLARECARD_URL` (e.g. `https://contacts.example.com`,
+optionally `ACME_EMAIL`) and the **secrets** `FLARECARD_ADMIN_USER` / `FLARECARD_ADMIN_PASSWORD`
+(a FlareCard admin — create a dedicated one). The job is skipped until `FLARECARD_URL` exists, runs
+daily and can be started by hand under *Actions → Renew profile-signing certificate → Run workflow*.
+No Cloudflare API token is involved, and the private key never leaves FlareCard. Optional secret
+`ACME_ACCOUNT_KEY` (JSON `{privateJwk, publicJwk}`) pins one ACME account; otherwise each renewal
+registers a fresh one, which is fine at Let's Encrypt's rate limits for a run every ~60 days.
+
+The same command works from any machine with Node 22 and network access:
+
+```bash
+FLARECARD_URL=https://contacts.example.com FLARECARD_ADMIN_USER=admin FLARECARD_ADMIN_PASSWORD=… \
+ACME_EMAIL=it@example.com npm run acme:renew            # add -- --force to renew now
+```
 
 Verify a downloaded profile yourself:
 
