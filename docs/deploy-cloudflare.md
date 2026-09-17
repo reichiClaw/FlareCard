@@ -382,9 +382,16 @@ domain — this is also done in the dashboard). After the first login, delete
 - **Rollback**: **Deployments** → previous version → **Rollback**. Data is never rolled back.
 - **Logs and metrics**: **flarecard → Logs** (persistent, searchable) and **Metrics**, see
   section 16. The live tail is also available in the dashboard under **Logs → Live**.
-- **Build failures**: open the failed build; the log shows the failing step. The two common causes
-  are a `wrangler.jsonc` edit with a JSON syntax error (a missing comma) and a Node.js version
-  override. Fix the file on GitHub and push; there is nothing to clean up on Cloudflare.
+- **Build failures**: open the failed build; the log shows the failing step. The common causes
+  are a `wrangler.jsonc` edit with a JSON syntax error (a missing comma), a Node.js version
+  override, and dependency bumps that left `package.json` and `package-lock.json` inconsistent
+  (see "npm clean-install fails" in section 21). Fix the file on GitHub and push; there is nothing
+  to clean up on Cloudflare.
+- **Dependabot**: the repository ships `.github/dependabot.yml`, which bundles all npm updates into
+  a single weekly pull request, and a CI workflow that runs the same `npm clean-install`,
+  typecheck, tests and build as Cloudflare. Merge a Dependabot PR only when its CI check is green;
+  never merge several separate dependency PRs without re-running CI on the result. If you enable
+  Dependabot's *security updates* on your fork they follow the same grouping.
 - **Disconnecting Git**: **Settings → Build → Disconnect**. The Worker and all data stay; you can
   continue with the CLI path.
 
@@ -936,6 +943,33 @@ after one full sync.
 **`wrangler deploy` fails with "Cannot apply new-sqlite-classes migration"** or similar.
 The migration tag `v1` already exists in a different form (e.g. you edited it). Restore the
 original `migrations` block; never edit past migrations.
+
+**Build fails at "Installing project dependencies: npm clean-install" with `ERESOLVE could not
+resolve` / "Conflicting peer dependency".**
+`npm clean-install` (`npm ci`) refuses to install when `package.json` and `package-lock.json`
+disagree or when two packages demand incompatible versions of a shared peer dependency. The
+typical trigger is merging dependency bumps one at a time (Dependabot, manual edits): for example
+`vitest` moved to a new major while a plugin such as `@cloudflare/vitest-pool-workers` still
+declares `peer vitest@^4`. Fix it in your repository, not on Cloudflare:
+
+1. Compare `package.json` with upstream (`https://github.com/reichiClaw/FlareCard/blob/main/package.json`).
+   Remove packages upstream does not list (FlareCard's tests run in plain Node; in particular
+   `@cloudflare/vitest-pool-workers` is **not** used and can be deleted), and undo bumps that upstream
+   has not made yet.
+2. Regenerate the lockfile locally and check the result:
+
+   ```bash
+   rm -rf node_modules package-lock.json
+   npm install
+   npm clean-install && npm run typecheck && npm test && npm run build
+   ```
+
+3. Commit **both** `package.json` and `package-lock.json` and push to `main`.
+
+Shortcut if you have not changed anything else in those two files: take upstream's copies
+(`git fetch upstream && git checkout upstream/main -- package.json package-lock.json`, or on
+GitHub **Sync fork → Discard commits**) and push. `--legacy-peer-deps`/`--force` only hide the
+problem; do not add them to the build command.
 
 **A variable I set in the dashboard (e.g. `PUBLIC_HOST`) was gone after the next deploy.**
 Your fork's `wrangler.jsonc` contains a `vars` block, or `keep_vars` was removed. Wrangler treats
