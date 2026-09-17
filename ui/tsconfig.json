@@ -13,7 +13,8 @@
     "esModuleInterop": true,
     "useDefineForClassFields": true,
     "types": ["vite/client"],
-    "paths": { "@/*": ["./src/*"] }
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
   },
   "include": ["src"]
 }
